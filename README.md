@@ -1,0 +1,120 @@
+# ZK-Whistleblower
+
+Anonymous whistleblowing platform using zero-knowledge proofs and blockchain. Members of an organization can submit reports proving they are legitimate insiders — without revealing their identity.
+
+## How It Works
+
+1. **Organization setup**: Admin registers employee commitments as leaves in a Merkle tree and publishes the root on-chain.
+2. **Whistleblower submits**: The whistleblower generates a ZK proof (Groth16) proving they know a secret corresponding to a leaf in the Merkle tree — without revealing which leaf. They also produce a nullifier hash to prevent double submissions.
+3. **On-chain verification**: The smart contract verifies the ZK proof, checks the nullifier hasn't been used, and stores the report with an encrypted IPFS CID pointing to the evidence.
+4. **Reviewer access**: Authorized reviewers fetch the encrypted evidence from IPFS and decrypt it locally.
+
+## Tech Stack
+
+- **ZK Circuits**: Circom 2 + Groth16 (via snarkjs)
+- **Hash Function**: Poseidon (ZK-optimized, from circomlib)
+- **Smart Contracts**: Solidity 0.8.28 (Hardhat 3)
+- **Access Control**: OpenZeppelin Ownable
+- **Merkle Tree Depth**: 10 (supports ~1024 members)
+
+## Project Structure
+
+```
+circuits/membership.circom       — ZK circuit (membership proof + nullifier)
+contracts/Groth16Verifier.sol    — Auto-generated proof verifier (by snarkjs)
+contracts/WhistleblowerRegistry.sol — Core contract (root mgmt, proof verification, reports)
+test/fixtures/setup.ts           — Poseidon, Merkle tree, proof generation utilities
+test/WhistleblowerRegistry.ts    — 13 tests with real ZK proofs
+scripts/compile-circuit.ts       — Circuit compilation + trusted setup pipeline
+scripts/deploy.ts                — Deploy + end-to-end demo
+apps/admin/                      — Admin app (dashboard, admin, admin keys, reviewer)
+apps/reporter/                   — Reporter app (join org, submit report)
+packages/shared/                 — Shared business logic previously in src/lib
+packages/ui/                     — Shared UI/providers previously in src/components + src/providers
+```
+
+## Setup
+
+```bash
+pnpm install
+pnpm run compile:circuit    # compile circuit + generate verifier (first time only)
+```
+
+## Commands
+
+```bash
+pnpm run test               # run all 13 tests
+pnpm run deploy:local       # deploy + demo on local Hardhat network
+pnpm run deploy:sepolia     # deploy to Sepolia testnet
+```
+
+## Apps (Admin + Reporter)
+
+### First-time setup
+
+```bash
+# 1. Install workspace dependencies from root
+pnpm install
+
+# 2. Copy circuit artifacts into each app public dir
+pnpm --filter @zk-whistleblower/admin copy-artifacts
+pnpm --filter @zk-whistleblower/reporter copy-artifacts
+
+# 3. Set contract addresses / env values per app
+#    apps/admin/.env.local
+#    apps/reporter/.env.local
+#    → paste addresses printed by `pnpm run deploy:local`
+
+# 4. Start app dev servers
+pnpm run dev:admin              # http://localhost:3000
+pnpm run dev:reporter           # http://localhost:3001
+
+# Optional: run reporter on a custom port (note: no extra `--` before flags)
+pnpm --filter @zk-whistleblower/reporter dev -p 3100
+```
+
+### Exit criteria (local Hardhat)
+
+1. Start Hardhat node: `npx hardhat node` (in root dir)
+2. Deploy contracts: `npx hardhat run --network localhost scripts/deploy.ts`
+3. Copy the printed addresses into `apps/admin/.env.local` and `apps/reporter/.env.local`
+4. Run `pnpm run dev:admin` and `pnpm run dev:reporter` from root
+5. Connect MetaMask to `localhost:8545` (Chain ID 31337)
+6. **Reporter app / Join Org page**: create 3-5 demo users (secret + commitment generated locally)
+7. **Admin app / Admin page**: load root from Join Org list (or generate manually) → Add Root
+8. **Reporter app / Submit page**: load demo context for each user → Generate Proof (~30 s) → Submit Report
+9. **Admin app / Reviewer page**: see the submitted reports listed with category and CID
+
+### Demo exit criteria
+
+- 3-5 demo members can each submit once for the same `externalNullifier`
+- Reusing the same member for a second submission is rejected with `Nullifier already used`
+
+### Tech stack (apps)
+
+| Library | Purpose |
+|---|---|
+| Next.js 15 (App Router) | Framework |
+| wagmi v2 + viem | Contract reads/writes |
+| RainbowKit | Wallet connect modal |
+| snarkjs (browser) | Client-side Groth16 proof generation |
+| circomlibjs | Poseidon hashing in browser |
+| Tailwind CSS | Styling |
+
+## Circuit Details
+
+The circuit proves: "I know a `secret` such that `Poseidon(secret)` is a leaf in the Merkle tree with the given root, and `Poseidon(secret, externalNullifier)` equals the given nullifier hash."
+
+**Public inputs** (visible on-chain): `root`, `nullifierHash`, `externalNullifier`
+
+**Private inputs** (known only to prover): `secret`, `pathElements[10]`, `pathIndices[10]`
+
+**Constraints**: 2,909 non-linear + 3,213 linear
+
+## Tests
+
+All tests use real ZK proof generation (no mocks):
+
+- Root management: add, duplicate rejection, revoke, non-owner rejection
+- Report submission: valid proof, nullifier replay, multi-member, unknown root, revoked root, fake proof, invalid category
+- Report retrieval: count check, non-existent report revert
