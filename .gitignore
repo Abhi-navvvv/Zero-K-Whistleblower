@@ -1,0 +1,38 @@
+# Node modules
+/node_modules
+node_modules/
+
+# Next.js build outputs
+.next/
+
+# TypeScript build info
+*.tsbuildinfo
+
+# Compilation output
+/dist
+
+# pnpm deploy output
+/bundle
+
+# Hardhat Build Artifacts
+/artifacts
+
+# Hardhat compilation (v2) support directory
+/cache
+
+# Typechain output
+/types
+
+# Hardhat coverage reports
+/coverage
+
+# ZK circuit artifacts (large binary files)
+/circuits-artifacts
+*.ptau
+*.wtns
+
+# Member key files (contain encrypted secrets)
+/keys
+
+# Environment variables
+.env
