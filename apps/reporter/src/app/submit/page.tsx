@@ -489,8 +489,8 @@ export default function SubmitPage() {
                 
                 {keyFileJson && keyImportStatus !== "done" && (
                     <div className="flex gap-2 w-full pt-2">
-                        <input className="input flex-1 text-xs px-3 h-8 bg-white/5 focus:bg-white/10" type="password" placeholder="Access password" value={keyFilePassword} onChange={(e) => setKeyFilePassword(e.target.value)} />
-                        <button className="btn-primary text-xs px-4 h-8 shrink-0 flex items-center justify-center" onClick={handleDecryptKeyFile}>Unlock</button>
+                        <input className="flex-1 border border-white/20 bg-white/5 focus:bg-white/10 focus:border-white focus:outline-none px-4 h-11 font-mono text-xs text-white placeholder-slate-500 transition-colors" type="password" placeholder="Access password" value={keyFilePassword} onChange={(e) => setKeyFilePassword(e.target.value)} />
+                        <button className="bg-white text-black font-black uppercase tracking-widest text-xs px-8 h-11 flex items-center justify-center hover:bg-slate-200 transition-colors shrink-0" onClick={handleDecryptKeyFile}>Unlock</button>
                     </div>
                 )}
                 {keyImportError && <p className="text-[10px] text-red-400 font-mono">{keyImportError}</p>}
