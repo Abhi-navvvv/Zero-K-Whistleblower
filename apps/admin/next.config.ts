@@ -6,9 +6,6 @@ const nextConfig: NextConfig = {
   experimental: {
     optimizePackageImports: [
       "@zk-whistleblower/shared",
-      "@rainbow-me/rainbowkit",
-      "wagmi",
-      "viem",
     ],
   },
   turbopack: {
