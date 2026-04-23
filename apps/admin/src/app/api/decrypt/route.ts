@@ -52,16 +52,20 @@ async function fetchIPFS<T = unknown>(cid: string): Promise<T> {
 
 export async function POST(req: NextRequest) {
   try {
-    // --- Reviewer API key authentication ---
+    // --- Reviewer API key authentication (fail-closed) ---
     const expectedKey = process.env.REVIEWER_API_KEY;
-    if (expectedKey) {
-      const providedKey = req.headers.get("x-api-key");
-      if (!providedKey || providedKey !== expectedKey) {
-        return NextResponse.json(
-          { error: "Unauthorized — provide a valid reviewer API key to decrypt reports" },
-          { status: 401 }
-        );
-      }
+    if (!expectedKey) {
+      return NextResponse.json(
+        { error: "Server misconfiguration — REVIEWER_API_KEY not set. Contact administrator." },
+        { status: 500 }
+      );
+    }
+    const providedKey = req.headers.get("x-api-key");
+    if (!providedKey || providedKey !== expectedKey) {
+      return NextResponse.json(
+        { error: "Unauthorized — provide a valid reviewer API key to decrypt reports" },
+        { status: 401 }
+      );
     }
 
     const body = (await req.json()) as {

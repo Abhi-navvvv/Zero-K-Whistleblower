@@ -46,10 +46,10 @@ async function relayTx(body: RelayRequest): Promise<RelayResponse> {
     const headers: Record<string, string> = {
         "Content-Type": "application/json",
     };
-    const apiKey = process.env.NEXT_PUBLIC_RELAY_API_KEY;
-    if (apiKey) {
-        headers["x-api-key"] = apiKey;
-    }
+    // NOTE: No API key is sent from the client side.
+    // Report submission actions are allowed without auth.
+    // Privileged admin actions require server-side RELAY_API_KEY,
+    // which is only sent by authenticated admin server routes.
 
     const res = await fetch("/api/relay", {
         method: "POST",
