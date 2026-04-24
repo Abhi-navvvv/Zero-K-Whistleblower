@@ -9,7 +9,7 @@ import { relaySubmitReport, relaySubmitReportForOrg, relayAddRootForOrg } from "
 import { initPoseidon, poseidonHash } from "@zk-whistleblower/shared/src/poseidon";
 import { buildMerkleTree } from "@zk-whistleblower/shared/src/merkle";
 import { generateZKProof, type FormattedProof } from "@zk-whistleblower/shared/src/zkProof";
-import { decryptSecret, type MemberKeyFile, type MemberManifest } from "@zk-whistleblower/shared/src/secretGen";
+import { readKeyFileSecret, type MemberKeyFile, type MemberManifest } from "@zk-whistleblower/shared/src/secretGen";
 import { encryptReportForOrgPublicKey } from "@zk-whistleblower/shared/src/encryption";
 import { uploadEncryptedReport, uploadEncryptedFile, uploadManifest } from "@zk-whistleblower/shared/src/ipfs";
 import { encryptFile, type ReportManifest } from "@zk-whistleblower/shared/src/fileEncryption";
@@ -79,14 +79,13 @@ export default function SubmitPage() {
 
   // Step 1: Access Credentials
   const [keyFileJson, setKeyFileJson] = useState("");
-  const [keyFilePassword, setKeyFilePassword] = useState("");
   const [keyFileName, setKeyFileName] = useState("");
   const [manifestFileName, setManifestFileName] = useState("");
   
   const [manifestImportStatus, setManifestImportStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
   const [manifestImportError, setManifestImportError] = useState("");
   
-  const [keyImportStatus, setKeyImportStatus] = useState<"idle" | "decrypting" | "done" | "error">("idle");
+  const [keyImportStatus, setKeyImportStatus] = useState<"idle" | "done" | "error">("idle");
   const [keyImportError, setKeyImportError] = useState("");
 
   // Hidden Cryptography State
@@ -180,7 +179,7 @@ export default function SubmitPage() {
     e.target.value = "";
   };
 
-  // Personal Access File Upload
+  // Personal Access File Upload — reads secret directly, no password needed
   const handleKeyFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) {
@@ -191,36 +190,43 @@ export default function SubmitPage() {
       return;
     }
     const reader = new FileReader();
-    reader.onload = (ev) => setKeyFileJson((ev.target?.result as string) ?? "");
+    reader.onload = (ev) => {
+      const raw = ev.target?.result as string;
+      setKeyFileJson(raw);
+      try {
+        const parsed = JSON.parse(raw) as Partial<MemberKeyFile>;
+        if (!parsed.commitment) throw new Error("Invalid key file.");
+
+        // New plaintext format
+        if (typeof parsed.secret === "string" && parsed.secret.trim()) {
+          const secretBig = BigInt(parsed.secret.trim());
+          setSecret(secretBig.toString());
+
+          // Auto leaf index resolution if manifest is already loaded
+          if (orgSecrets.trim()) {
+            const commitments = orgSecrets.split(/\n+/).map(s => s.trim()).filter(Boolean);
+            const idx = commitments.findIndex((c) => c === parsed.commitment!.trim());
+            if (idx >= 0) setLeafIndex(String(idx));
+          }
+          setKeyImportStatus("done");
+        } else if ((parsed as Record<string, unknown>).encrypted) {
+          // Legacy encrypted format — show helpful error
+          setKeyImportError("This key file uses the old encrypted format. Please ask your admin to re-generate your access file.");
+          setKeyImportStatus("error");
+        } else {
+          throw new Error("Invalid key file format.");
+        }
+      } catch (err) {
+        setKeyImportError(err instanceof Error ? err.message : "Invalid key file.");
+        setKeyImportStatus("error");
+      }
+    };
     reader.readAsText(file);
     setKeyFileName(file.name);
     setKeyImportStatus("idle");
     setKeyImportError("");
     e.target.value = "";
   };
-
-  const handleDecryptKeyFile = useCallback(async () => {
-    setKeyImportError("");
-    setKeyImportStatus("decrypting");
-    try {
-      const parsed: MemberKeyFile = JSON.parse(keyFileJson);
-      if (!parsed.encrypted || !parsed.commitment) throw new Error("Invalid organization file.");
-      const decrypted = await decryptSecret(parsed.encrypted, keyFilePassword);
-      setSecret(decrypted.toString());
-      
-      // Auto leaf index resolution if manifest is loaded
-      if (orgSecrets.trim()) {
-        const commitments = orgSecrets.split(/\n+/).map(s => s.trim()).filter(Boolean);
-        const idx = commitments.findIndex((c) => c === parsed.commitment.trim());
-        if (idx >= 0) setLeafIndex(String(idx));
-      }
-
-      setKeyImportStatus("done");
-    } catch (e: unknown) {
-      setKeyImportError("Incorrect password or invalid file.");
-      setKeyImportStatus("error");
-    }
-  }, [keyFileJson, keyFilePassword, orgSecrets]);
 
   const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
@@ -474,9 +480,10 @@ export default function SubmitPage() {
                 <div className="flex items-start justify-between">
                     <div>
                         <h3 className="text-sm font-bold text-white mb-1">Personal Access File</h3>
-                        <p className="text-[10px] font-mono text-slate-400">Required: <code className="bg-white/10 px-1 py-0.5 rounded">{'<your-id>.json'}</code></p>
+                        <p className="text-[10px] font-mono text-slate-400">Required: <code className="bg-white/10 px-1 py-0.5 rounded">{'{your-id}.json'}</code></p>
                     </div>
                     {keyImportStatus === "done" && <Icon name="check_circle" className="text-green-500 text-2xl" />}
+                    {keyImportStatus === "error" && <Icon name="error" className="text-red-500 text-2xl" />}
                 </div>
                 
                 <div className="flex items-center gap-3">
@@ -487,12 +494,6 @@ export default function SubmitPage() {
                     <span className="text-[10px] font-mono text-slate-500 truncate max-w-[150px]">{keyFileName}</span>
                 </div>
                 
-                {keyFileJson && keyImportStatus !== "done" && (
-                    <div className="flex gap-2 w-full pt-2">
-                        <input className="flex-1 border border-white/20 bg-white/5 focus:bg-white/10 focus:border-white focus:outline-none px-4 h-11 font-mono text-xs text-white placeholder-slate-500 transition-colors" type="password" placeholder="Access password" value={keyFilePassword} onChange={(e) => setKeyFilePassword(e.target.value)} />
-                        <button className="bg-white text-black font-black uppercase tracking-widest text-xs px-8 h-11 flex items-center justify-center hover:bg-slate-200 transition-colors shrink-0" onClick={handleDecryptKeyFile}>Unlock</button>
-                    </div>
-                )}
                 {keyImportError && <p className="text-[10px] text-red-400 font-mono">{keyImportError}</p>}
             </div>
 

@@ -6,7 +6,7 @@
  * so separate deployments / networks never collide.
  */
 
-import type { EncryptedSecret } from "./secretGen";
+
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -15,7 +15,7 @@ import type { EncryptedSecret } from "./secretGen";
 export interface StoredMember {
   memberId: string;
   commitment: string;
-  encrypted: EncryptedSecret;
+  secret: string;
   /** ISO-8601 timestamp of when this member was first generated */
   createdAt: string;
 }
@@ -61,7 +61,7 @@ export function getStoredMembers(orgId: number): StoredMember[] {
     if (!Array.isArray(parsed)) return [];
 
     return parsed
-      .filter((m) => m && m.memberId && m.commitment && m.encrypted)
+      .filter((m) => m && m.memberId && m.commitment && m.secret)
       .sort((a, b) => (a.createdAt ?? "").localeCompare(b.createdAt ?? ""));
   } catch {
     return [];

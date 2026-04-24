@@ -1,18 +1,12 @@
-// Browser-side secret generation and encryption for admin key file creation.
-// Mirrors the Node.js logic in scripts/register-members.ts so key files
-// generated here are compatible with those from the script.
-
-export interface EncryptedSecret {
-  iv: string;
-  salt: string;
-  ciphertext: string;
-  tag: string;
-}
+// Browser-side secret generation for admin key file creation.
+// The secret is stored in plaintext — it is a random number with no connection
+// to any real-world identity, so encrypting it with a password only adds UX
+// friction without meaningful security benefit.
 
 export interface MemberKeyFile {
   memberId: string;
   commitment: string;
-  encrypted: EncryptedSecret;
+  secret: string;
 }
 
 export interface MemberManifest {
@@ -48,106 +42,6 @@ export function generateSecret(): bigint {
   return BigInt("0x" + bytesToHex(bytes));
 }
 
-// Produces the same AES-256-GCM format as the Node.js encryptSecret in register-members.ts.
-export async function encryptSecret(
-  secret: bigint,
-  password: string
-): Promise<EncryptedSecret> {
-  const enc = new TextEncoder();
-
-  const salt = new Uint8Array(new ArrayBuffer(16));
-  crypto.getRandomValues(salt);
-  const iv = new Uint8Array(new ArrayBuffer(12));
-  crypto.getRandomValues(iv);
-
-  const passwordKey = await crypto.subtle.importKey(
-    "raw",
-    enc.encode(password),
-    "PBKDF2",
-    false,
-    ["deriveKey"]
-  );
-
-  const aesKey = await crypto.subtle.deriveKey(
-    { name: "PBKDF2", salt, iterations: 100_000, hash: "SHA-256" },
-    passwordKey,
-    { name: "AES-GCM", length: 256 },
-    false,
-    ["encrypt"]
-  );
-
-  const secretBytes = enc.encode(secret.toString());
-  const encrypted = await crypto.subtle.encrypt(
-    { name: "AES-GCM", iv },
-    aesKey,
-    secretBytes
-  );
-
-  // Web Crypto appends the 16-byte auth tag at the tail of the output buffer.
-  const arr = new Uint8Array(encrypted);
-  const ciphertext = arr.slice(0, arr.length - 16);
-  const tag = arr.slice(arr.length - 16);
-
-  return {
-    iv: bytesToHex(iv),
-    salt: bytesToHex(salt),
-    ciphertext: bytesToHex(ciphertext),
-    tag: bytesToHex(tag),
-  };
-}
-
-// Decryption 
-
-/**
- * Decrypts a key file's encrypted payload back to the original secret bigint.
- * Works with files produced by both this module and the Node.js script.
- */
-export async function decryptSecret(
-  encrypted: EncryptedSecret,
-  password: string
-): Promise<bigint> {
-  const enc = new TextEncoder();
-
-  const salt = hexToBytes(encrypted.salt);
-  const iv = hexToBytes(encrypted.iv);
-  const ciphertext = hexToBytes(encrypted.ciphertext);
-  const tag = hexToBytes(encrypted.tag);
-
-  const passwordKey = await crypto.subtle.importKey(
-    "raw",
-    enc.encode(password),
-    "PBKDF2",
-    false,
-    ["deriveKey"]
-  );
-
-  const aesKey = await crypto.subtle.deriveKey(
-    { name: "PBKDF2", salt, iterations: 100_000, hash: "SHA-256" },
-    passwordKey,
-    { name: "AES-GCM", length: 256 },
-    false,
-    ["decrypt"]
-  );
-
-  // Web Crypto expects ciphertext || authTag in a single ArrayBuffer.
-  const combined = new Uint8Array(ciphertext.length + tag.length);
-  combined.set(ciphertext);
-  combined.set(tag, ciphertext.length);
-
-  let decrypted: ArrayBuffer;
-  try {
-    decrypted = await crypto.subtle.decrypt(
-      { name: "AES-GCM", iv },
-      aesKey,
-      combined
-    );
-  } catch {
-    throw new Error("Decryption failed — wrong password or corrupted key file.");
-  }
-
-  return BigInt(new TextDecoder().decode(decrypted));
-}
-
 //  Download helper 
 
 /* Triggers a browser download of a JSON object. */
@@ -161,4 +55,20 @@ export function downloadJSON(data: object, filename: string): void {
   a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+/**
+ * Reads a plaintext key file and returns the secret bigint.
+ * Also handles legacy encrypted key files gracefully by returning null,
+ * so the submit page can show an appropriate message.
+ */
+export function readKeyFileSecret(keyFile: MemberKeyFile): bigint | null {
+  if (typeof keyFile.secret === "string" && keyFile.secret.trim()) {
+    try {
+      return BigInt(keyFile.secret.trim());
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
