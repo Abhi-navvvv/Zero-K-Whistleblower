@@ -3,6 +3,7 @@
 import { ReactNode, useEffect, useState } from "react";
 import { useAccount, useReadContract } from "wagmi";
 import { REGISTRY_ABI, REGISTRY_ADDRESS } from "@zk-whistleblower/shared/src/contracts";
+import { getLeagues, getLeagueMembers, type AdminPermissions } from "@zk-whistleblower/shared/src/leagueStore";
 import { useOrg } from "./OrgProvider";
 import Icon from "./Icon";
 
@@ -11,7 +12,10 @@ interface AdminGateProps {
   /** Optional custom message for the not-connected state */
   connectMessage?: string;
   /** Optional custom message for the access-denied state */
+  /** Optional custom message for the access-denied state */
   deniedMessage?: string;
+  /** Optional specific permission required to access this endpoint */
+  requirePermission?: keyof AdminPermissions;
 }
 
 /**
@@ -28,6 +32,7 @@ export default function AdminGate({
   children,
   connectMessage = "Connect your wallet to verify admin access for this organization.",
   deniedMessage = "Your connected wallet is not registered as an admin for this organization.",
+  requirePermission,
 }: AdminGateProps) {
   const { address, isConnected } = useAccount();
   const { selectedOrgId } = useOrg();
@@ -173,6 +178,38 @@ export default function AdminGate({
     );
   }
 
-  // ── State 5: Connected + verified admin ──
+  // ── State 5: Connected + verified admin, check granular permissions ──
+  let hasPermission = true;
+  if (requirePermission && address) {
+    const members = getLeagueMembers(selectedOrgId);
+    const userLeagueIds = members
+      .filter((m) => m.address.toLowerCase() === address.toLowerCase())
+      .map((m) => m.leagueId);
+
+    if (userLeagueIds.length > 0) {
+      const leagues = getLeagues(selectedOrgId);
+      const userLeagues = leagues.filter((l) => userLeagueIds.includes(l.id));
+      hasPermission = userLeagues.some((l) => l.permissions?.[requirePermission] === true);
+    }
+  }
+
+  if (!hasPermission) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[60vh] gap-6">
+        <div className="inline-flex items-center justify-center w-20 h-20 rounded-full border border-orange-500/30 bg-orange-500/10 shadow-[0_0_30px_rgba(249,115,22,0.15)] relative">
+          <Icon name="block" className="text-4xl text-orange-500 relative z-10" />
+        </div>
+        <div className="text-center space-y-4 max-w-md">
+          <h2 className="text-white text-3xl font-black uppercase tracking-tighter">
+            Insufficient Permissions
+          </h2>
+          <p className="text-slate-400 text-sm font-mono leading-relaxed px-4">
+            You do not have the required permission ({requirePermission}) to view this page.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return <>{children}</>;
 }

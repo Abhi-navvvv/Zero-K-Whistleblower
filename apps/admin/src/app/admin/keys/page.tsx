@@ -83,7 +83,7 @@ export default function AdminKeysPage() {
   };
 
   return (
-    <AdminGate>
+    <AdminGate requirePermission="canManageKeys">
     <div className="space-y-8">
       <div>
         <h1 className="text-white text-4xl font-black leading-none tracking-tighter mb-3 uppercase italic">

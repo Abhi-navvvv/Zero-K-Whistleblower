@@ -10,10 +10,18 @@ function membersKey(orgId: number) {
   return `zk-whistleblower:league-members:${SCOPE}:org${orgId}`;
 }
 
+export interface AdminPermissions {
+  canManageRoots: boolean;
+  canManageKeys: boolean;
+  canManageAdmins: boolean;
+  canReviewReports: boolean;
+}
+
 export interface League {
   id: string;
   name: string;
   createdAt: string;
+  permissions?: AdminPermissions;
 }
 
 export interface LeagueMember {
@@ -52,9 +60,9 @@ export function saveLeague(orgId: number, league: League): League[] {
   return next;
 }
 
-export function renameLeague(orgId: number, leagueId: string, name: string): League[] {
+export function updateLeague(orgId: number, leagueId: string, updates: Partial<{ name: string; permissions: AdminPermissions }>): League[] {
   const leagues = getLeagues(orgId).map((l) =>
-    l.id === leagueId ? { ...l, name: name.trim() } : l
+    l.id === leagueId ? { ...l, ...updates, name: updates.name ? updates.name.trim() : l.name } : l
   );
   write(leaguesKey(orgId), leagues);
   return leagues;
