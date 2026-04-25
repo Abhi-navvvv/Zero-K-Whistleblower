@@ -12,7 +12,7 @@ import { generateZKProof, type FormattedProof } from "@zk-whistleblower/shared/s
 import { readKeyFileSecret, type MemberKeyFile, type MemberManifest } from "@zk-whistleblower/shared/src/secretGen";
 import { encryptReportForOrgPublicKey } from "@zk-whistleblower/shared/src/encryption";
 import { uploadEncryptedReport, uploadEncryptedFile, uploadManifest } from "@zk-whistleblower/shared/src/ipfs";
-import { encryptFile, type ReportManifest } from "@zk-whistleblower/shared/src/fileEncryption";
+import { encryptFile, stripMetadata, type ReportManifest, type SanitizationResult } from "@zk-whistleblower/shared/src/fileEncryption";
 
 import { getCurrentEpoch, formatEpochRange } from "@zk-whistleblower/shared/src/epoch";
 import { useOrg } from "@zk-whistleblower/ui";
@@ -98,6 +98,8 @@ export default function SubmitPage() {
   const [category, setCategory] = useState<0 | 1 | 2 | 3>(0);
   const [reportText, setReportText] = useState("");
   const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
+  const [sanitizationWarnings, setSanitizationWarnings] = useState<string[]>([]);
+  const [sanitizing, setSanitizing] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [availableLeagues, setAvailableLeagues] = useState<{ id: string; name: string }[]>([]);
   const [selectedRecipient, setSelectedRecipient] = useState(""); // league id or "" for general
@@ -228,14 +230,28 @@ export default function SubmitPage() {
     e.target.value = "";
   };
 
-  const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || []);
-    setAttachedFiles((prev) => [...prev, ...files].slice(0, MAX_FILES));
+  const handleFileSelect = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const incoming = Array.from(e.target.files || []);
     if (fileInputRef.current) fileInputRef.current.value = "";
+    if (!incoming.length) return;
+
+    setSanitizing(true);
+    const results: SanitizationResult[] = await Promise.all(incoming.map(stripMetadata));
+    setSanitizing(false);
+
+    const sanitisedFiles = results.map(r => r.file);
+    const newWarnings = results.filter(r => !r.safe).map(r => (r as { safe: false; file: File; warning: string }).warning);
+
+    setAttachedFiles((prev) => [...prev, ...sanitisedFiles].slice(0, MAX_FILES));
+    setSanitizationWarnings((prev) => [...prev, ...newWarnings]);
   }, []);
 
   const handleRemoveFile = useCallback((index: number) => {
     setAttachedFiles((prev) => prev.filter((_, i) => i !== index));
+  }, []);
+
+  const handleDismissWarning = useCallback((index: number) => {
+    setSanitizationWarnings((prev) => prev.filter((_, i) => i !== index));
   }, []);
 
   const executeEncryptAndUpload = async (): Promise<string> => {
@@ -568,19 +584,60 @@ export default function SubmitPage() {
 
             <div>
               <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2 block">Supporting Evidence</label>
-              <div className="border border-dashed border-white/20 bg-white/5 hover:bg-white/10 transition-colors p-6 rounded-lg text-center cursor-pointer" onClick={() => { if(attachedFiles.length < MAX_FILES) fileInputRef.current?.click(); }}>
-                 <Icon name="cloud_upload" className="text-4xl text-slate-400 mb-3 mx-auto block" />
-                 <p className="text-sm text-white font-bold">{attachedFiles.length >= MAX_FILES ? "Limit Reached" : "Click to attach files"}</p>
-                 <p className="text-[10px] font-mono text-slate-500 mt-1">Up to {MAX_FILES} files (Max {MAX_FILE_SIZE / 1024 / 1024}MB each)</p>
+
+              {/* Sanitization warnings for unsupported file types */}
+              {sanitizationWarnings.length > 0 && (
+                <div className="mb-3 space-y-2">
+                  {sanitizationWarnings.map((warning, i) => (
+                    <div key={i} className="flex items-start gap-3 p-3 bg-red-500/10 border border-red-500/40 rounded-lg">
+                      <Icon name="warning" className="text-red-400 text-lg shrink-0 mt-0.5" />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-[10px] font-bold text-red-400 uppercase tracking-wider mb-1">Metadata Risk Detected</p>
+                        <p className="text-[10px] font-mono text-red-300 leading-relaxed">{warning}</p>
+                      </div>
+                      <button onClick={() => handleDismissWarning(i)} className="text-red-400 hover:text-white text-lg leading-none shrink-0">&times;</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div
+                className={`border border-dashed ${sanitizing ? "border-blue-500/40 bg-blue-500/5" : "border-white/20 bg-white/5 hover:bg-white/10"} transition-colors p-6 rounded-lg text-center cursor-pointer`}
+                onClick={() => { if (!sanitizing && attachedFiles.length < MAX_FILES) fileInputRef.current?.click(); }}
+              >
+                {sanitizing ? (
+                  <>
+                    <Icon name="shield" className="text-4xl text-blue-400 mb-3 mx-auto block animate-pulse" />
+                    <p className="text-sm text-blue-400 font-bold">Stripping metadata...</p>
+                    <p className="text-[10px] font-mono text-blue-400/60 mt-1">Removing EXIF, GPS and author data</p>
+                  </>
+                ) : (
+                  <>
+                    <Icon name="cloud_upload" className="text-4xl text-slate-400 mb-3 mx-auto block" />
+                    <p className="text-sm text-white font-bold">{attachedFiles.length >= MAX_FILES ? "Limit Reached" : "Click to attach files"}</p>
+                    <p className="text-[10px] font-mono text-slate-500 mt-1">Images & PDFs are automatically sanitised · Up to {MAX_FILES} files · Max {MAX_FILE_SIZE / 1024 / 1024}MB each</p>
+                  </>
+                )}
               </div>
               <input ref={fileInputRef} type="file" multiple className="hidden" onChange={handleFileSelect} />
-              
+
               {attachedFiles.length > 0 && (
                 <div className="mt-3 space-y-2">
                   {attachedFiles.map((f, i) => (
                     <div key={i} className="flex items-center justify-between bg-black/40 px-3 py-2 border border-white/5 rounded">
-                       <span className="text-xs font-mono text-slate-300 truncate pr-4">{f.name}</span>
-                       <button onClick={() => handleRemoveFile(i)} className="text-red-400 hover:text-white px-2 text-lg leading-none">&times;</button>
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="text-xs font-mono text-slate-300 truncate">{f.name}</span>
+                        {(f.type.startsWith("image/") || f.type === "application/pdf") ? (
+                          <span className="shrink-0 text-[8px] font-bold uppercase tracking-widest bg-green-500/20 text-green-400 px-1.5 py-0.5 rounded">
+                            sanitised
+                          </span>
+                        ) : (
+                          <span className="shrink-0 text-[8px] font-bold uppercase tracking-widest bg-red-500/20 text-red-400 px-1.5 py-0.5 rounded">
+                            unsanitised
+                          </span>
+                        )}
+                      </div>
+                      <button onClick={() => handleRemoveFile(i)} className="text-red-400 hover:text-white px-2 text-lg leading-none shrink-0">&times;</button>
                     </div>
                   ))}
                 </div>

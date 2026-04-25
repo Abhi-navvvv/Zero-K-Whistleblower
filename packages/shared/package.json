@@ -5,6 +5,7 @@
   "types": "src/index.ts",
   "dependencies": {
     "circomlibjs": "^0.1.7",
+    "pdf-lib": "^1.17.1",
     "snarkjs": "^0.7.6",
     "viem": "^2.0.0"
   }
