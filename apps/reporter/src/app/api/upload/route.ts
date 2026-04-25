@@ -36,6 +36,23 @@ async function readPinataErrorBody(res: Response): Promise<string> {
   }
 }
 
+// --- In-memory rate limiter (per-IP, sliding window) ---
+const RATE_LIMIT_WINDOW_MS = 60_000; // 1 minute
+const RATE_LIMIT_MAX_REQUESTS = 10;
+const rateLimitMap = new Map<string, number[]>();
+
+function isRateLimited(ip: string): boolean {
+  const now = Date.now();
+  const timestamps = rateLimitMap.get(ip) ?? [];
+  const recent = timestamps.filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
+  if (recent.length >= RATE_LIMIT_MAX_REQUESTS) return true;
+  recent.push(now);
+  rateLimitMap.set(ip, recent);
+  return false;
+}
+
+const MAX_BODY_SIZE = 15 * 1024 * 1024; // 15 MB
+
 /**
  * POST /api/upload
  * Body: JSON (EncryptedBlob — already encrypted client-side)
@@ -46,10 +63,43 @@ async function readPinataErrorBody(res: Response): Promise<string> {
  * leaves the submitter's browser.
  */
 export async function POST(req: NextRequest) {
+  // --- Upload authentication (fail-closed) ---
+  const uploadKey = process.env.UPLOAD_API_KEY;
+  if (!uploadKey) {
+    return NextResponse.json(
+      { error: "Server misconfiguration — UPLOAD_API_KEY not set. Contact administrator." },
+      { status: 500 }
+    );
+  }
+  const providedKey = req.headers.get("x-upload-key");
+  if (!providedKey || providedKey !== uploadKey) {
+    return NextResponse.json(
+      { error: "Unauthorized — invalid or missing upload key" },
+      { status: 401 }
+    );
+  }
+
+  // --- Rate limiting ---
+  const clientIp = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+  if (isRateLimited(clientIp)) {
+    return NextResponse.json(
+      { error: "Rate limit exceeded — too many uploads. Try again shortly." },
+      { status: 429 }
+    );
+  }
+
+  // --- Body size check ---
+  const contentLength = parseInt(req.headers.get("content-length") ?? "0", 10);
+  if (contentLength > MAX_BODY_SIZE) {
+    return NextResponse.json(
+      { error: `Request body too large (${(contentLength / 1024 / 1024).toFixed(1)}MB). Max ${MAX_BODY_SIZE / 1024 / 1024}MB.` },
+      { status: 413 }
+    );
+  }
+
   const rawJwt =
     process.env.PINATA_JWT ??
-    process.env.PINATA_JWT_SERVER ??
-    process.env.NEXT_PUBLIC_PINATA_JWT;
+    process.env.PINATA_JWT_SERVER;
   if (!rawJwt) {
     return NextResponse.json(
       {

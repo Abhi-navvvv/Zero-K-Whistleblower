@@ -75,18 +75,6 @@ async function ensureOrganizationApisAvailable(publicClient: ReturnType<typeof c
 
 export async function POST(req: NextRequest) {
     try {
-        // --- API key authentication ---
-        const expectedKey = process.env.RELAY_API_KEY;
-        if (expectedKey) {
-            const providedKey = req.headers.get("x-api-key");
-            if (!providedKey || providedKey !== expectedKey) {
-                return NextResponse.json(
-                    { error: "Unauthorized — invalid or missing API key" },
-                    { status: 401 }
-                );
-            }
-        }
-
         const { rpcUrl, privateKey } = readConfig();
         const body = (await req.json()) as {
             action?: RelayAction;
@@ -95,6 +83,27 @@ export async function POST(req: NextRequest) {
 
         if (!body?.action || !body.payload) {
             return NextResponse.json({ error: "Invalid relayer payload" }, { status: 400 });
+        }
+
+        // --- Tiered authorization ---
+        // Report submission is allowed without API key (anonymous reporter flow).
+        // All privileged admin actions require RELAY_API_KEY and fail-closed.
+        const isPublicAction = body.action === "submitReport" || body.action === "submitReportForOrg";
+        if (!isPublicAction) {
+            const expectedKey = process.env.RELAY_API_KEY;
+            if (!expectedKey) {
+                return NextResponse.json(
+                    { error: "Server misconfiguration — RELAY_API_KEY not set. Contact administrator." },
+                    { status: 500 }
+                );
+            }
+            const providedKey = req.headers.get("x-api-key");
+            if (!providedKey || providedKey !== expectedKey) {
+                return NextResponse.json(
+                    { error: "Unauthorized — invalid or missing API key" },
+                    { status: 401 }
+                );
+            }
         }
 
         const account = privateKeyToAccount(privateKey);

@@ -47,9 +47,19 @@ async function readApiErrorMessage(res: Response): Promise<string> {
 }
 
 async function uploadViaApi(payload: unknown, failurePrefix: string): Promise<string> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  // Attach upload auth key. This is a per-deployment upload token,
+  // distinct from the Pinata JWT (which stays server-only).
+  const uploadKey = process.env.NEXT_PUBLIC_UPLOAD_API_KEY;
+  if (uploadKey) {
+    headers["x-upload-key"] = uploadKey;
+  }
+
   const res = await fetch("/api/upload", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify(payload),
   });
 
