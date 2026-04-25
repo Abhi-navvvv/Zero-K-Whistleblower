@@ -572,7 +572,7 @@ export default function ReviewerPage() {
   }, [recipientMap]);
 
   return (
-    <AdminGate>
+    <AdminGate requirePermission="canReviewReports">
     <div className="space-y-12">
       <div className="flex items-center justify-between">
         <div>

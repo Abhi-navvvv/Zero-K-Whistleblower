@@ -12,13 +12,14 @@ import { useOrg } from "@zk-whistleblower/ui";
 import {
   getLeagues,
   saveLeague,
-  renameLeague,
+  updateLeague,
   deleteLeague,
   getLeagueMembers,
   addLeagueMember,
   removeLeagueMember,
   type League,
   type LeagueMember,
+  type AdminPermissions,
 } from "@zk-whistleblower/shared/src/leagueStore";
 
 interface AdminEvent {
@@ -91,10 +92,22 @@ function AdminsPageInner() {
   const [members, setMembers] = useState<LeagueMember[]>([]);
 
   const [newLeagueName, setNewLeagueName] = useState("");
+  const [newLeaguePermissions, setNewLeaguePermissions] = useState<AdminPermissions>({
+    canManageRoots: false,
+    canManageKeys: false,
+    canManageAdmins: false,
+    canReviewReports: true,
+  });
   const [leagueError, setLeagueError] = useState("");
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState("");
+  const [editingPermissions, setEditingPermissions] = useState<AdminPermissions>({
+    canManageRoots: false,
+    canManageKeys: false,
+    canManageAdmins: false,
+    canReviewReports: true,
+  });
 
   const [assignLeagueId, setAssignLeagueId] = useState("");
   const [assignAddress, setAssignAddress] = useState("");
@@ -181,16 +194,22 @@ function AdminsPageInner() {
       setLeagueError("A league with this name already exists");
       return;
     }
-    const league: League = { id: crypto.randomUUID(), name, createdAt: new Date().toISOString() };
+    const league: League = { id: crypto.randomUUID(), name, createdAt: new Date().toISOString(), permissions: newLeaguePermissions };
     setLeagues(saveLeague(selectedOrgId, league));
     setNewLeagueName("");
+    setNewLeaguePermissions({
+      canManageRoots: false,
+      canManageKeys: false,
+      canManageAdmins: false,
+      canReviewReports: true,
+    });
     setLeagueError("");
   };
 
   const handleSaveRename = (leagueId: string) => {
     const name = editingName.trim();
     if (!name) return;
-    setLeagues(renameLeague(selectedOrgId, leagueId, name));
+    setLeagues(updateLeague(selectedOrgId, leagueId, { name, permissions: editingPermissions }));
     setEditingId(null);
   };
 
@@ -242,7 +261,7 @@ function AdminsPageInner() {
   const leagueMap = Object.fromEntries(leagues.map((l) => [l.id, l.name]));
 
   return (
-    <AdminGate>
+    <AdminGate requirePermission="canManageAdmins">
     <div className="space-y-10">
       {/* ── Header ── */}
       <div>
@@ -267,17 +286,38 @@ function AdminsPageInner() {
           <span className="text-white/60">mutable</span>; delete a league to remove its local records (on-chain roles are unaffected).
         </p>
 
-        <div className="flex gap-2">
-          <input
-            className="input font-mono text-xs flex-1 py-3"
-            placeholder="League name (e.g. HR, Dean of Students)"
-            value={newLeagueName}
-            onChange={(e) => { setNewLeagueName(e.target.value); setLeagueError(""); }}
-            onKeyDown={(e) => e.key === "Enter" && handleCreateLeague()}
-          />
-          <button className="btn-primary px-6 py-3 w-auto" onClick={handleCreateLeague}>
-            + Create
-          </button>
+        <div className="flex flex-col gap-3">
+          <div className="flex gap-2">
+            <input
+              className="input font-mono text-xs flex-1 py-3"
+              placeholder="League name (e.g. HR, Dean of Students)"
+              value={newLeagueName}
+              onChange={(e) => { setNewLeagueName(e.target.value); setLeagueError(""); }}
+              onKeyDown={(e) => e.key === "Enter" && handleCreateLeague()}
+            />
+            <button className="btn-primary px-6 py-3 w-auto" onClick={handleCreateLeague}>
+              + Create
+            </button>
+          </div>
+          <div className="flex gap-4 text-xs font-mono text-slate-400 bg-white/5 p-3 rounded">
+            <span className="text-white/60 uppercase text-[10px]">Permissions:</span>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" checked={newLeaguePermissions.canReviewReports} onChange={(e) => setNewLeaguePermissions(p => ({ ...p, canReviewReports: e.target.checked }))} />
+              Review Reports
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" checked={newLeaguePermissions.canManageRoots} onChange={(e) => setNewLeaguePermissions(p => ({ ...p, canManageRoots: e.target.checked }))} />
+              Manage Roots
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" checked={newLeaguePermissions.canManageKeys} onChange={(e) => setNewLeaguePermissions(p => ({ ...p, canManageKeys: e.target.checked }))} />
+              Manage Keys
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" checked={newLeaguePermissions.canManageAdmins} onChange={(e) => setNewLeaguePermissions(p => ({ ...p, canManageAdmins: e.target.checked }))} />
+              Manage Admins
+            </label>
+          </div>
         </div>
         {leagueError && <p className="text-[10px] font-mono text-red-400">{leagueError}</p>}
 
@@ -288,34 +328,73 @@ function AdminsPageInner() {
               return (
                 <div key={league.id} className="flex items-center gap-3 px-4 py-3 hover:bg-white/[0.02] transition-colors">
                   {editingId === league.id ? (
-                    <>
-                      <input
-                        autoFocus
-                        className="input font-mono text-xs flex-1 py-1.5"
-                        value={editingName}
-                        onChange={(e) => setEditingName(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") handleSaveRename(league.id);
-                          if (e.key === "Escape") setEditingId(null);
-                        }}
-                      />
-                      <button className="text-xs font-bold text-white border border-white/20 px-3 py-1.5 hover:bg-white hover:text-black transition-colors" onClick={() => handleSaveRename(league.id)}>Save</button>
-                      <button className="text-xs text-slate-500 hover:text-white px-2" onClick={() => setEditingId(null)}>✕</button>
-                    </>
+                    <div className="flex-1 space-y-2">
+                      <div className="flex gap-2 w-full">
+                        <input
+                          autoFocus
+                          className="input font-mono text-xs flex-1 py-1.5"
+                          value={editingName}
+                          onChange={(e) => setEditingName(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") handleSaveRename(league.id);
+                            if (e.key === "Escape") setEditingId(null);
+                          }}
+                        />
+                        <button className="text-xs font-bold text-white border border-white/20 px-3 py-1.5 hover:bg-white hover:text-black transition-colors" onClick={() => handleSaveRename(league.id)}>Save</button>
+                        <button className="text-xs text-slate-500 hover:text-white px-2" onClick={() => setEditingId(null)}>✕</button>
+                      </div>
+                      <div className="flex gap-4 text-[10px] font-mono text-slate-400">
+                        <label className="flex items-center gap-1.5 cursor-pointer">
+                          <input type="checkbox" checked={editingPermissions.canReviewReports} onChange={(e) => setEditingPermissions(p => ({ ...p, canReviewReports: e.target.checked }))} />
+                          Review Reports
+                        </label>
+                        <label className="flex items-center gap-1.5 cursor-pointer">
+                          <input type="checkbox" checked={editingPermissions.canManageRoots} onChange={(e) => setEditingPermissions(p => ({ ...p, canManageRoots: e.target.checked }))} />
+                          Manage Roots
+                        </label>
+                        <label className="flex items-center gap-1.5 cursor-pointer">
+                          <input type="checkbox" checked={editingPermissions.canManageKeys} onChange={(e) => setEditingPermissions(p => ({ ...p, canManageKeys: e.target.checked }))} />
+                          Manage Keys
+                        </label>
+                        <label className="flex items-center gap-1.5 cursor-pointer">
+                          <input type="checkbox" checked={editingPermissions.canManageAdmins} onChange={(e) => setEditingPermissions(p => ({ ...p, canManageAdmins: e.target.checked }))} />
+                          Manage Admins
+                        </label>
+                      </div>
+                    </div>
                   ) : (
                     <>
                       <div className="flex-1 min-w-0">
                         <span className="text-sm font-bold text-white uppercase tracking-wide">{league.name}</span>
-                        <span className="ml-3 text-[10px] font-mono text-slate-600">
-                          {count} member{count !== 1 ? "s" : ""}
-                        </span>
+                        <div className="flex gap-2 items-center mt-1">
+                          <span className="text-[10px] font-mono text-slate-600">
+                            {count} member{count !== 1 ? "s" : ""}
+                          </span>
+                          <span className="text-[10px] uppercase font-mono text-white/30 truncate">
+                            {[
+                              league.permissions?.canReviewReports && "Review",
+                              league.permissions?.canManageRoots && "Roots",
+                              league.permissions?.canManageKeys && "Keys",
+                              league.permissions?.canManageAdmins && "Admins"
+                            ].filter(Boolean).join(", ") || "No Permissions"}
+                          </span>
+                        </div>
                       </div>
                       <button
                         className="text-[10px] font-mono text-slate-500 hover:text-white transition-colors px-2 py-1"
-                        onClick={() => { setEditingId(league.id); setEditingName(league.name); }}
-                        title="Rename"
+                        onClick={() => { 
+                          setEditingId(league.id); 
+                          setEditingName(league.name);
+                          setEditingPermissions(league.permissions || {
+                            canManageRoots: false,
+                            canManageKeys: false,
+                            canManageAdmins: false,
+                            canReviewReports: true,
+                          });
+                        }}
+                        title="Edit League"
                       >
-                        rename
+                        edit
                       </button>
                       <button
                         className="text-[10px] font-mono text-red-500/60 hover:text-red-400 transition-colors px-2 py-1"

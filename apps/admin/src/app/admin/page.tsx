@@ -420,7 +420,7 @@ export default function AdminPage() {
   };
 
   return (
-    <AdminGate>
+    <AdminGate requirePermission="canManageRoots">
     <div className="space-y-12">
       <div className="mb-8">
         <h1 className="text-white text-4xl font-black leading-none tracking-tighter mb-3 uppercase italic">
