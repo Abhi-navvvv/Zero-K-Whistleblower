@@ -153,6 +153,8 @@ export interface ReportManifest {
   createdAt: string;
   /** Role/league this report is directed to (e.g. "HR", "Ethics Board") */
   recipient?: { id: string; name: string };
+  /** Communication key (hex) for anonymous two-way messaging. Derived from whistleblower's secret. */
+  commKey?: string;
 }
 
 function toBase64(buf: ArrayBuffer | Uint8Array): string {
