@@ -42,16 +42,21 @@ type RelayRequest =
         };
     };
 
-async function relayTx(body: RelayRequest): Promise<RelayResponse> {
+/**
+ * Send a relay request to the given endpoint.
+ *
+ * - Public reporter actions (submitReport / submitReportForOrg) use "/api/relay"
+ *   directly — no API key required.
+ * - Privileged admin actions use "/api/admin-relay", a server-side proxy that
+ *   reads RELAY_API_KEY from the server environment and injects it before
+ *   forwarding to "/api/relay". This keeps the secret off the browser.
+ */
+async function relayTx(body: RelayRequest, endpoint = "/api/relay"): Promise<RelayResponse> {
     const headers: Record<string, string> = {
         "Content-Type": "application/json",
     };
-    // NOTE: No API key is sent from the client side.
-    // Report submission actions are allowed without auth.
-    // Privileged admin actions require server-side RELAY_API_KEY,
-    // which is only sent by authenticated admin server routes.
 
-    const res = await fetch("/api/relay", {
+    const res = await fetch(endpoint, {
         method: "POST",
         headers,
         body: JSON.stringify(body),
@@ -77,37 +82,45 @@ async function relayTx(body: RelayRequest): Promise<RelayResponse> {
     };
 }
 
+// ── Privileged admin actions — routed through /api/admin-relay ─────────────
+// The admin-relay route is a server-side proxy that reads RELAY_API_KEY from
+// the server environment and injects it before forwarding to /api/relay.
+// This prevents the secret from ever reaching the browser.
+const ADMIN_RELAY = "/api/admin-relay";
+
 export function relayAddRoot(root: string) {
-    return relayTx({ action: "addRoot", payload: { root } });
+    return relayTx({ action: "addRoot", payload: { root } }, ADMIN_RELAY);
 }
 
 export function relayAddRootForOrg(orgId: number, root: string) {
-    return relayTx({ action: "addRootForOrg", payload: { orgId: String(orgId), root } });
+    return relayTx({ action: "addRootForOrg", payload: { orgId: String(orgId), root } }, ADMIN_RELAY);
 }
 
 export function relayRevokeRoot(root: string) {
-    return relayTx({ action: "revokeRoot", payload: { root } });
+    return relayTx({ action: "revokeRoot", payload: { root } }, ADMIN_RELAY);
 }
 
 export function relayRevokeRootForOrg(orgId: number, root: string) {
-    return relayTx({ action: "revokeRootForOrg", payload: { orgId: String(orgId), root } });
+    return relayTx({ action: "revokeRootForOrg", payload: { orgId: String(orgId), root } }, ADMIN_RELAY);
 }
 
 export function relayCreateOrganization(orgId: number, name: string) {
-    return relayTx({ action: "createOrganization", payload: { orgId: String(orgId), name } });
+    return relayTx({ action: "createOrganization", payload: { orgId: String(orgId), name } }, ADMIN_RELAY);
 }
 
 export function relaySetOrganizationActive(orgId: number, active: boolean) {
-    return relayTx({ action: "setOrganizationActive", payload: { orgId: String(orgId), active } });
+    return relayTx({ action: "setOrganizationActive", payload: { orgId: String(orgId), active } }, ADMIN_RELAY);
 }
 
 export function relayGrantOrgAdmin(orgId: number, account: string) {
-    return relayTx({ action: "grantOrgAdmin", payload: { orgId: String(orgId), account } });
+    return relayTx({ action: "grantOrgAdmin", payload: { orgId: String(orgId), account } }, ADMIN_RELAY);
 }
 
 export function relayRevokeOrgAdmin(orgId: number, account: string) {
-    return relayTx({ action: "revokeOrgAdmin", payload: { orgId: String(orgId), account } });
+    return relayTx({ action: "revokeOrgAdmin", payload: { orgId: String(orgId), account } }, ADMIN_RELAY);
 }
+
+// ── Public reporter actions — no API key required ───────────────────────────
 
 export function relaySubmitReport(
     payload: Extract<RelayRequest, { action: "submitReport" }>['payload']
