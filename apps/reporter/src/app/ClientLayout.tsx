@@ -4,6 +4,7 @@ import { Providers, OrgProvider, Navbar, Sidebar, type NavItem } from "@zk-whist
 
 const REPORTER_NAV_ITEMS: NavItem[] = [
   { href: "/submit", icon: "terminal", label: "Submit Report" },
+  { href: "/inbox", icon: "chat", label: "Anonymous Inbox" },
 ];
 
 export default function ClientLayout({ children }: { children: React.ReactNode }) {
