@@ -1,6 +1,13 @@
 "use client";
 
-import { Icon, AdminGate } from "@zk-whistleblower/ui";
+import {
+  Icon,
+  AdminGate,
+  useAccount,
+  usePublicClient,
+  useReadContract,
+  useWatchContractEvent,
+} from "@zk-whistleblower/ui";
 import {
   encryptMessage,
   decryptMessage,
@@ -10,12 +17,6 @@ import {
 } from "@zk-whistleblower/shared/src/messaging";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  useReadContract,
-  usePublicClient,
-  useWatchContractEvent,
-  useAccount,
-} from "wagmi";
 import { REGISTRY_ABI, REGISTRY_ADDRESS, CATEGORIES } from "@zk-whistleblower/shared/src/contracts";
 import { useOrg } from "@zk-whistleblower/ui";
 import {
