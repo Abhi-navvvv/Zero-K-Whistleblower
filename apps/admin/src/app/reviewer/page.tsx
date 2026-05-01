@@ -365,7 +365,7 @@ function ReportCard({
                 <p className="text-[10px] font-mono text-slate-600 animate-pulse">Loading messages…</p>
               )}
               {threadMessages.length > 0 && (
-                <div className="space-y-2 max-h-64 overflow-y-auto">
+                <div className="space-y-2 max-h-96 overflow-y-auto">
                   {threadMessages.map((msg, i) => (
                     <div
                       key={i}
@@ -395,21 +395,23 @@ function ReportCard({
               )}
 
               {/* Reply input */}
-              <div className="flex gap-2">
+              <div className="space-y-2">
                 <textarea
-                  className="flex-1 border border-white/20 bg-white/5 focus:bg-white/10 focus:border-white focus:outline-none px-3 py-2 font-mono text-xs text-white placeholder-slate-500 transition-colors resize-none rounded"
-                  rows={2}
+                  className="w-full border border-white/20 bg-white/5 focus:bg-white/10 focus:border-white focus:outline-none px-3 py-2 font-mono text-xs text-white placeholder-slate-500 transition-colors resize-none rounded"
+                  rows={3}
                   placeholder="Type a follow-up question…"
                   value={replyText}
                   onChange={(e) => setReplyText(e.target.value)}
                 />
-                <button
-                  className="btn-primary text-xs px-4 shrink-0 self-end"
-                  onClick={handleReply}
-                  disabled={!replyText.trim() || replyStatus === "sending"}
-                >
-                  {replyStatus === "sending" ? "Sending…" : replyStatus === "sent" ? "Sent ✓" : "Send"}
-                </button>
+                <div className="flex justify-end">
+                  <button
+                    className="btn-primary text-xs px-6 py-2"
+                    onClick={handleReply}
+                    disabled={!replyText.trim() || replyStatus === "sending"}
+                  >
+                    {replyStatus === "sending" ? "Sending…" : replyStatus === "sent" ? "Sent ✓" : "Send"}
+                  </button>
+                </div>
               </div>
               {replyError && (
                 <p className="text-[10px] font-mono text-red-400">{replyError}</p>

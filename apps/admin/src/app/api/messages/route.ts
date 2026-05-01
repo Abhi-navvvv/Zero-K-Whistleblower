@@ -12,11 +12,14 @@ import fs from "fs/promises";
  * The admin API key is required for POST (admin replies).
  * GET is open — the whistleblower fetches their messages anonymously.
  * Messages are encrypted client-side with the shared commKey.
+ *
+ * Note: In serverless environments (Vercel), filesystem writes to ephemeral /tmp are used.
+ * For production deployments, consider migrating to Vercel KV or a database.
  */
 
 export const runtime = "nodejs";
 
-const MESSAGES_DIR = path.join(process.cwd(), ".messages");
+const MESSAGES_DIR = path.join("/tmp", ".messages");
 
 interface EncryptedMessage {
   from: "admin" | "reporter";
@@ -26,7 +29,15 @@ interface EncryptedMessage {
 }
 
 async function ensureDir() {
-  await fs.mkdir(MESSAGES_DIR, { recursive: true });
+  try {
+    await fs.mkdir(MESSAGES_DIR, { recursive: true });
+  } catch (err) {
+    // In serverless environments, /tmp may have restrictions
+    // Log but don't fail - messages can still be stored temporarily
+    if (process.env.NODE_ENV === "development") {
+      console.error("Failed to create messages directory:", err);
+    }
+  }
 }
 
 function sanitizeHash(hash: string): string {
@@ -40,6 +51,7 @@ function messageFilePath(nullifierHash: string): string {
 
 async function readMessages(nullifierHash: string): Promise<EncryptedMessage[]> {
   try {
+    await ensureDir();
     const data = await fs.readFile(messageFilePath(nullifierHash), "utf-8");
     const parsed = JSON.parse(data);
     return Array.isArray(parsed) ? parsed : [];
