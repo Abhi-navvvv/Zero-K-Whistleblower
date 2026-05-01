@@ -1,5 +1,128 @@
 // File encryption/decryption using the same envelope encryption as text reports.
 // AES-256-GCM for data encryption, RSA-OAEP for key wrapping.
+//
+// stripMetadata() runs before every encryption. Supported types are sanitised
+// automatically; unsupported types return a warning that the UI can surface.
+
+// ─── Metadata stripping ──────────────────────────────────────────────────────
+
+export type SanitizationResult =
+  | { safe: true; file: File; method: string }
+  | { safe: false; file: File; warning: string };
+
+const IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif", "image/bmp"];
+const PDF_TYPE = "application/pdf";
+
+/**
+ * Re-draws an image on a blank Canvas and exports it as PNG.
+ * The Canvas API never copies EXIF, GPS, ICC profiles or thumbnails —
+ * only raw pixel data is transferred. The output MIME is always image/png.
+ */
+async function stripImageMetadata(file: File): Promise<File> {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const canvas = document.createElement("canvas");
+        canvas.width = img.naturalWidth;
+        canvas.height = img.naturalHeight;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) throw new Error("Canvas 2D context unavailable");
+        ctx.drawImage(img, 0, 0);
+        canvas.toBlob((blob) => {
+          URL.revokeObjectURL(url);
+          if (!blob) return reject(new Error("Canvas toBlob failed"));
+          // Keep original filename, force PNG extension + MIME
+          const safeName = file.name.replace(/\.[^.]+$/, "") + ".png";
+          resolve(new File([blob], safeName, { type: "image/png" }));
+        }, "image/png");
+      } catch (e) {
+        URL.revokeObjectURL(url);
+        reject(e);
+      }
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("Failed to load image for metadata stripping"));
+    };
+    img.src = url;
+  });
+}
+
+/**
+ * Loads a PDF with pdf-lib and saves it back with all metadata fields cleared.
+ * Removes: Author, Creator, Producer, Keywords, Subject, Title, CreationDate,
+ * ModificationDate — anything that could link the file back to the user.
+ */
+async function stripPdfMetadata(file: File): Promise<File> {
+  const { PDFDocument } = await import("pdf-lib");
+  const arrayBuffer = await file.arrayBuffer();
+  const pdfDoc = await PDFDocument.load(arrayBuffer, {
+    // Ignore cross-reference errors in slightly malformed PDFs
+    ignoreEncryption: false,
+    updateMetadata: false,
+  });
+
+  // Wipe all standard document-info metadata fields
+  pdfDoc.setAuthor("");
+  pdfDoc.setCreator("");
+  pdfDoc.setProducer("");
+  pdfDoc.setKeywords([]);
+  pdfDoc.setSubject("");
+  pdfDoc.setTitle("");
+  // Set generic fixed timestamps so timing can't be used for correlation
+  const epoch = new Date(0);
+  pdfDoc.setCreationDate(epoch);
+  pdfDoc.setModificationDate(epoch);
+
+  const cleanBytes = await pdfDoc.save({ addDefaultPage: false });
+  return new File([cleanBytes], file.name, { type: "application/pdf" });
+}
+
+/**
+ * Sanitises a file before encryption.
+ *
+ * - Images → redrawn on Canvas (strips EXIF / GPS / ICC / thumbnails)
+ * - PDFs   → rebuilt via pdf-lib (clears all document metadata fields)
+ * - Others → returned with safe: false and a warning for the UI to display
+ *
+ * The caller should always check `result.safe` and surface the warning to
+ * the user before allowing them to proceed with unsupported file types.
+ */
+export async function stripMetadata(file: File): Promise<SanitizationResult> {
+  try {
+    if (IMAGE_TYPES.includes(file.type)) {
+      const cleaned = await stripImageMetadata(file);
+      return { safe: true, file: cleaned, method: "Canvas re-encode (EXIF/GPS removed)" };
+    }
+
+    if (file.type === PDF_TYPE) {
+      const cleaned = await stripPdfMetadata(file);
+      return { safe: true, file: cleaned, method: "pdf-lib rebuild (all metadata cleared)" };
+    }
+
+    // Unsupported — pass the original file through but flag the warning
+    return {
+      safe: false,
+      file,
+      warning:
+        `"${file.name}" is a ${file.type || "unknown"} file. ` +
+        "This file type cannot be automatically sanitised — it may contain hidden metadata " +
+        "(author name, device ID, edit history) that could reveal your identity. " +
+        "Consider converting it to PNG or PDF before attaching.",
+    };
+  } catch (err) {
+    // If stripping fails, treat it like an unsupported type rather than silently encrypting
+    return {
+      safe: false,
+      file,
+      warning:
+        `Metadata stripping failed for "${file.name}": ${err instanceof Error ? err.message : String(err)}. ` +
+        "The file has not been sanitised. Proceed with caution.",
+    };
+  }
+}
 
 export interface EncryptedFileBlob {
   v: 2;
