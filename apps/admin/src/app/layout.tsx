@@ -4,6 +4,11 @@ import "@rainbow-me/rainbowkit/styles.css";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import ClientLayout from "./ClientLayout";
 
+// Force all pages in this app to be dynamically rendered (never statically
+// prerendered). This prevents build-time crashes from wagmi/WalletConnect
+// accessing browser-only APIs (indexedDB) during SSR prerendering.
+export const dynamic = "force-dynamic";
+
 // Self-hosted via next/font — zero external network requests, no render-blocking
 const inter = Inter({
   subsets: ["latin"],
