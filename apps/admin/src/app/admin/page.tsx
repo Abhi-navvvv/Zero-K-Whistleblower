@@ -12,7 +12,7 @@ import { relayCreateOrganization, relayRevokeRootForOrg, relaySetOrganizationAct
 import { initPoseidon, poseidonHash } from "@zk-whistleblower/shared/src/poseidon";
 import { buildMerkleTree } from "@zk-whistleblower/shared/src/merkle";
 import { generateSecret, type MemberKeyFile } from "@zk-whistleblower/shared/src/secretGen";
-import { encryptSecret, downloadJSON } from "@zk-whistleblower/shared/src/secretGen";
+import { downloadJSON } from "@zk-whistleblower/shared/src/secretGen";
 import { getLeagues } from "@zk-whistleblower/shared/src/leagueStore";
 
 import { useOrg } from "@zk-whistleblower/ui";
@@ -70,7 +70,6 @@ export default function AdminPage() {
   // Member registration types 
   interface MemberInput {
     id: string;
-    password: string;
   }
   interface GeneratedMember {
     id: string;
@@ -80,7 +79,7 @@ export default function AdminPage() {
   }
 
   // Member registration state
-  const [members, setMembers] = useState<MemberInput[]>([{ id: "", password: "" }]);
+  const [members, setMembers] = useState<MemberInput[]>([{ id: "" }]);
   const [generated, setGenerated] = useState<GeneratedMember[]>([]);
   const [generating, setGenerating] = useState(false);
   const [genError, setGenError] = useState("");
@@ -194,14 +193,14 @@ export default function AdminPage() {
 
   //  Member list helpers 
   const handleAddMember = () =>
-    setMembers((m) => [...m, { id: "", password: "" }]);
+    setMembers((m) => [...m, { id: "" }]);
 
   const handleRemoveMember = (i: number) =>
     setMembers((m) => m.filter((_, idx) => idx !== i));
 
   const handleMemberChange = (
     i: number,
-    field: "id" | "password",
+    field: "id",
     val: string
   ) =>
     setMembers((m) =>
@@ -236,15 +235,14 @@ export default function AdminPage() {
       for (const mem of newInputs) {
         const secret = generateSecret();
         const commitment = poseidonHash([secret]);
-        const pwd = mem.password.trim() || mem.id.trim();
-        const encrypted = await encryptSecret(secret, pwd);
         const memberId = mem.id.trim();
         const commitmentStr = commitment.toString();
+        const secretStr = secret.toString();
 
         newStored.push({
           memberId,
           commitment: commitmentStr,
-          encrypted,
+          secret: secretStr,
           createdAt: new Date().toISOString(),
         });
 
@@ -255,7 +253,7 @@ export default function AdminPage() {
           keyFile: {
             memberId,
             commitment: commitmentStr,
-            encrypted,
+            secret: secretStr,
           },
         });
       }
@@ -278,7 +276,7 @@ export default function AdminPage() {
       setAddRootInput(root.toString());
 
       // Clear input rows since they've been processed
-      setMembers([{ id: "", password: "" }]);
+      setMembers([{ id: "" }]);
     } catch (e: unknown) {
       setGenError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -554,27 +552,17 @@ export default function AdminPage() {
 
         {/* Member rows */}
         <div className="space-y-2">
-          <div className="grid grid-cols-[1fr_1fr_2rem] gap-2 mb-1">
+          <div className="grid grid-cols-[1fr_2rem] gap-2 mb-1">
             <span className="label">Member ID</span>
-            <span className="label">Password</span>
             <span />
           </div>
           {members.map((mem, i) => (
-            <div key={i} className="grid grid-cols-[1fr_1fr_2rem] gap-2 items-center">
+            <div key={i} className="grid grid-cols-[1fr_2rem] gap-2 items-center">
               <input
                 className="input font-mono text-xs py-3"
                 placeholder="e.g. alice"
                 value={mem.id}
                 onChange={(e) => handleMemberChange(i, "id", e.target.value)}
-              />
-              <input
-                className="input font-mono text-xs py-3"
-                type="password"
-                placeholder="leave blank → use ID"
-                value={mem.password}
-                onChange={(e) =>
-                  handleMemberChange(i, "password", e.target.value)
-                }
               />
               <button
                 className="text-red-500 hover:text-red-400 disabled:opacity-30 text-lg leading-none"
