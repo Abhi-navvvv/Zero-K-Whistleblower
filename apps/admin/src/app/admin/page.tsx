@@ -4,7 +4,7 @@ import { useState, useCallback, useEffect, useRef } from "react";
 import {
   useWaitForTransactionReceipt,
   useWatchContractEvent,
-} from "wagmi";
+} from "@zk-whistleblower/ui";
 import { Icon, AdminGate } from "@zk-whistleblower/ui";
 import { REGISTRY_ABI, REGISTRY_ADDRESS } from "@zk-whistleblower/shared/src/contracts";
 import { relayAddRootForOrg } from "@zk-whistleblower/shared/src/relayer";

@@ -1,8 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
-import { useReadContract, useWatchContractEvent } from "wagmi";
-import { Icon, AdminGate } from "@zk-whistleblower/ui";
+import { Icon, AdminGate, useReadContract, useWatchContractEvent } from "@zk-whistleblower/ui";
 import { REGISTRY_ABI, REGISTRY_ADDRESS } from "@zk-whistleblower/shared/src/contracts";
 import {
   relayGrantOrgAdmin,
