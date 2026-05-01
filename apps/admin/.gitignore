@@ -4,3 +4,5 @@ node_modules/
 .keys/report-private.pem
 .keys/report-private.pkcs8.b64
 .messages/
+.vercel
+.env*.local
