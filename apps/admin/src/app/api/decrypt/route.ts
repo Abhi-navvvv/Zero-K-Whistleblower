@@ -135,6 +135,7 @@ export async function POST(req: NextRequest) {
           originalSize: f.originalSize,
         })),
         ...(manifest.recipient && { recipient: manifest.recipient }),
+        ...(manifest.commKey && { commKey: manifest.commKey }),
       });
     }
 

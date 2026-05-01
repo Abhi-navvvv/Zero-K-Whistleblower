@@ -70,6 +70,27 @@ export default function HomePage() {
               </span>
             </div>
           </Link>
+
+          <Link
+            href="/inbox"
+            className="card flex flex-col gap-5 hover:border-white/30 transition-all duration-300 hover:bg-white/[0.03] hover:-translate-y-1 group"
+          >
+            <div className="flex justify-between items-start">
+              <p className="text-[10px] font-mono text-white/40">02_MODULE</p>
+              <Icon name="chat" className="text-white/20 group-hover:text-white/40 transition-colors text-3xl" />
+            </div>
+            <div>
+              <h3 className="font-black text-white uppercase text-2xl">Anonymous Inbox</h3>
+              <p className="mt-2 text-sm text-slate-400 leading-relaxed max-w-xl">
+                Check for follow-up messages from reviewers and reply anonymously. Your identity remains cryptographically hidden throughout the conversation.
+              </p>
+            </div>
+            <div className="mt-2 border-t border-white/10 pt-4">
+              <span className="inline-block text-sm font-black text-white uppercase tracking-widest group-hover:translate-x-2 transition-transform">
+                CHECK MESSAGES →
+              </span>
+            </div>
+          </Link>
       </section>
 
       {/* footer */}

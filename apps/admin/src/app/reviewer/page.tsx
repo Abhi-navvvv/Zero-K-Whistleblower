@@ -1,6 +1,13 @@
 "use client";
 
 import { Icon, AdminGate } from "@zk-whistleblower/ui";
+import {
+  encryptMessage,
+  decryptMessage,
+  fetchMessages,
+  postMessage,
+  type EncryptedMessage,
+} from "@zk-whistleblower/shared/src/messaging";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -116,6 +123,14 @@ function ReportCard({
   const [fileList, setFileList] = useState<FileInfo[]>([]);
   const [downloadingFile, setDownloadingFile] = useState<number | null>(null);
 
+  // Two-way messaging state
+  const [commKey, setCommKey] = useState("");
+  const [replyText, setReplyText] = useState("");
+  const [replyStatus, setReplyStatus] = useState<"idle" | "sending" | "sent" | "error">("idle");
+  const [replyError, setReplyError] = useState("");
+  const [threadMessages, setThreadMessages] = useState<{ from: string; text: string; timestamp: string }[]>([]);
+  const [threadLoading, setThreadLoading] = useState(false);
+
   const buildHeaders = useCallback((): Record<string, string> => {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (reviewerKey.trim()) {
@@ -141,6 +156,7 @@ function ReportCard({
         manifest?: boolean;
         files?: FileInfo[];
         recipient?: { id: string; name: string };
+        commKey?: string;
       };
       if (!res.ok || typeof data.plaintext !== "string") {
         throw new Error(data.error || `Decrypt failed (${res.status})`);
@@ -150,6 +166,12 @@ function ReportCard({
       if (data.manifest && Array.isArray(data.files)) {
         setFileList(data.files);
       }
+      // Extract commKey for two-way messaging
+      if (typeof data.commKey === "string" && data.commKey) {
+        setCommKey(data.commKey);
+        // Auto-fetch existing messages for this thread
+        loadThread(data.commKey);
+      }
       setDecryptStatus("done");
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : String(e);
@@ -157,6 +179,48 @@ function ReportCard({
       setDecryptStatus("error");
     }
   }, [report.encryptedCID, orgId, buildHeaders, canDecrypt]);
+
+  // ── Two-way messaging handlers ──
+
+  const loadThread = useCallback(async (key: string) => {
+    setThreadLoading(true);
+    try {
+      const nullHash = report.nullifierHash.toString();
+      const encrypted = await fetchMessages("", nullHash);
+      const decrypted: { from: string; text: string; timestamp: string }[] = [];
+      for (const msg of encrypted) {
+        try {
+          const text = await decryptMessage(key, msg);
+          decrypted.push({ from: msg.from, text, timestamp: msg.timestamp });
+        } catch {
+          decrypted.push({ from: msg.from, text: "[Decryption failed]", timestamp: msg.timestamp });
+        }
+      }
+      setThreadMessages(decrypted);
+    } catch {
+      // Silently fail — no messages yet is normal
+    } finally {
+      setThreadLoading(false);
+    }
+  }, [report.nullifierHash]);
+
+  const handleReply = useCallback(async () => {
+    if (!replyText.trim() || !commKey) return;
+    setReplyStatus("sending");
+    setReplyError("");
+    try {
+      const encrypted = await encryptMessage(commKey, replyText.trim(), "admin");
+      await postMessage("", report.nullifierHash.toString(), encrypted, reviewerKey);
+      setReplyText("");
+      setReplyStatus("sent");
+      // Refresh the thread
+      await loadThread(commKey);
+      setTimeout(() => setReplyStatus("idle"), 2000);
+    } catch (e) {
+      setReplyError(e instanceof Error ? e.message : String(e));
+      setReplyStatus("error");
+    }
+  }, [replyText, commKey, report.nullifierHash, reviewerKey, loadThread]);
 
   const handleDownloadFile = useCallback(async (fileIndex: number, filename: string) => {
     setDownloadingFile(fileIndex);
@@ -286,6 +350,72 @@ function ReportCard({
               )}
             </div>
           )}
+
+          {/* ── Two-way messaging panel ── */}
+          {commKey && decryptStatus === "done" && (
+            <div className="border-t border-white/10 pt-3 space-y-3">
+              <p className="text-[10px] font-mono text-slate-500 uppercase tracking-widest flex items-center gap-2">
+                <Icon name="chat" className="text-sm" />
+                Anonymous Messaging Channel
+              </p>
+
+              {/* Thread messages */}
+              {threadLoading && (
+                <p className="text-[10px] font-mono text-slate-600 animate-pulse">Loading messages…</p>
+              )}
+              {threadMessages.length > 0 && (
+                <div className="space-y-2 max-h-64 overflow-y-auto">
+                  {threadMessages.map((msg, i) => (
+                    <div
+                      key={i}
+                      className={`p-2 text-xs font-mono rounded ${
+                        msg.from === "admin"
+                          ? "bg-blue-500/10 border border-blue-500/20 text-blue-300 ml-4"
+                          : "bg-green-500/10 border border-green-500/20 text-green-300 mr-4"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-[9px] font-bold uppercase tracking-widest">
+                          {msg.from === "admin" ? "You (Admin)" : "Reporter"}
+                        </span>
+                        <span className="text-[9px] text-slate-600">
+                          {new Date(msg.timestamp).toLocaleString()}
+                        </span>
+                      </div>
+                      <p className="whitespace-pre-wrap break-words">{msg.text}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {!threadLoading && threadMessages.length === 0 && (
+                <p className="text-[10px] font-mono text-slate-600">
+                  No messages yet. Send a follow-up question to the anonymous reporter.
+                </p>
+              )}
+
+              {/* Reply input */}
+              <div className="flex gap-2">
+                <textarea
+                  className="flex-1 border border-white/20 bg-white/5 focus:bg-white/10 focus:border-white focus:outline-none px-3 py-2 font-mono text-xs text-white placeholder-slate-500 transition-colors resize-none rounded"
+                  rows={2}
+                  placeholder="Type a follow-up question…"
+                  value={replyText}
+                  onChange={(e) => setReplyText(e.target.value)}
+                />
+                <button
+                  className="btn-primary text-xs px-4 shrink-0 self-end"
+                  onClick={handleReply}
+                  disabled={!replyText.trim() || replyStatus === "sending"}
+                >
+                  {replyStatus === "sending" ? "Sending…" : replyStatus === "sent" ? "Sent ✓" : "Send"}
+                </button>
+              </div>
+              {replyError && (
+                <p className="text-[10px] font-mono text-red-400">{replyError}</p>
+              )}
+            </div>
+          )}
+
           {decryptStatus === "error" && (
             <p className="text-[10px] font-mono text-red-400">{decryptError}</p>
           )}

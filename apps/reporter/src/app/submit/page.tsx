@@ -13,6 +13,7 @@ import { readKeyFileSecret, type MemberKeyFile, type MemberManifest } from "@zk-
 import { encryptReportForOrgPublicKey } from "@zk-whistleblower/shared/src/encryption";
 import { uploadEncryptedReport, uploadEncryptedFile, uploadManifest } from "@zk-whistleblower/shared/src/ipfs";
 import { encryptFile, stripMetadata, type ReportManifest, type SanitizationResult } from "@zk-whistleblower/shared/src/fileEncryption";
+import { deriveCommKey } from "@zk-whistleblower/shared/src/messaging";
 
 import { getCurrentEpoch, formatEpochRange } from "@zk-whistleblower/shared/src/epoch";
 import { useOrg } from "@zk-whistleblower/ui";
@@ -261,12 +262,14 @@ export default function SubmitPage() {
     setSubmitProgress("Uploading encrypted data...");
     const textCid = await uploadEncryptedReport(textBlob);
 
+    // Derive communication key for anonymous two-way messaging
+    setSubmitProgress("Generating communication key...");
+    const commKey = await deriveCommKey(BigInt(secret.trim()));
+
     // Determine recipient metadata
     const recipientMeta = selectedRecipient
         ? availableLeagues.find(l => l.id === selectedRecipient) ?? undefined
         : undefined;
-
-    if (attachedFiles.length === 0 && !recipientMeta) return textCid;
 
     const fileMetas: ReportManifest["files"] = [];
     for (let i = 0; i < attachedFiles.length; i++) {
@@ -279,6 +282,7 @@ export default function SubmitPage() {
         fileMetas.push({ cid: fileCid, filename: file.name, mimeType: file.type || "application/octet-stream", originalSize: file.size });
     }
     
+    // Always create a manifest so the commKey is always included
     setSubmitProgress("Generating data manifest...");
     const manifest: ReportManifest = {
         v: 1,
@@ -286,6 +290,7 @@ export default function SubmitPage() {
         textCid,
         files: fileMetas,
         createdAt: new Date().toISOString(),
+        commKey,
         ...(recipientMeta && { recipient: recipientMeta }),
     };
     return await uploadManifest(manifest);

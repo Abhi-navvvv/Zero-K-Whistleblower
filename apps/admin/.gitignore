@@ -3,3 +3,4 @@ node_modules/
 .env.local
 .keys/report-private.pem
 .keys/report-private.pkcs8.b64
+.messages/
