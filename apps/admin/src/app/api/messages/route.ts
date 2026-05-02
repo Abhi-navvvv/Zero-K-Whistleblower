@@ -65,16 +65,29 @@ async function writeMessages(nullifierHash: string, messages: EncryptedMessage[]
   await fs.writeFile(messageFilePath(nullifierHash), JSON.stringify(messages, null, 2));
 }
 
+function addCorsHeaders(response: NextResponse): NextResponse {
+  response.headers.set("Access-Control-Allow-Origin", "*");
+  response.headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  response.headers.set("Access-Control-Allow-Headers", "Content-Type, x-api-key");
+  return response;
+}
+
+// ─── OPTIONS: Handle CORS preflight requests ──────────────────────────────────
+
+export async function OPTIONS() {
+  return addCorsHeaders(NextResponse.json({ ok: true }));
+}
+
 // ─── GET: Fetch messages for a nullifierHash ─────────────────────────────────
 
 export async function GET(req: NextRequest) {
   const nullifier = req.nextUrl.searchParams.get("nullifier");
   if (!nullifier?.trim()) {
-    return NextResponse.json({ error: "Missing nullifier parameter" }, { status: 400 });
+    return addCorsHeaders(NextResponse.json({ error: "Missing nullifier parameter" }, { status: 400 }));
   }
 
   const messages = await readMessages(nullifier.trim());
-  return NextResponse.json({ messages, count: messages.length });
+  return addCorsHeaders(NextResponse.json({ messages, count: messages.length }));
 }
 
 // ─── POST: Add a message to a nullifierHash's thread ─────────────────────────
@@ -87,33 +100,33 @@ export async function POST(req: NextRequest) {
     };
 
     if (!body.nullifierHash?.trim()) {
-      return NextResponse.json({ error: "Missing nullifierHash" }, { status: 400 });
+      return addCorsHeaders(NextResponse.json({ error: "Missing nullifierHash" }, { status: 400 }));
     }
     if (!body.message || !body.message.ciphertext || !body.message.nonce) {
-      return NextResponse.json({ error: "Invalid message payload" }, { status: 400 });
+      return addCorsHeaders(NextResponse.json({ error: "Invalid message payload" }, { status: 400 }));
     }
 
     // Validate the sender type
     const from = body.message.from;
     if (from !== "admin" && from !== "reporter") {
-      return NextResponse.json({ error: "Invalid sender type" }, { status: 400 });
+      return addCorsHeaders(NextResponse.json({ error: "Invalid sender type" }, { status: 400 }));
     }
 
     // Admin messages require API key authentication
     if (from === "admin") {
       const expectedKey = process.env.REVIEWER_API_KEY;
       if (!expectedKey) {
-        return NextResponse.json(
+        return addCorsHeaders(NextResponse.json(
           { error: "Server misconfiguration — REVIEWER_API_KEY not set" },
           { status: 500 }
-        );
+        ));
       }
       const providedKey = req.headers.get("x-api-key");
       if (!providedKey || providedKey !== expectedKey) {
-        return NextResponse.json(
+        return addCorsHeaders(NextResponse.json(
           { error: "Unauthorized — admin messages require a valid API key" },
           { status: 401 }
-        );
+        ));
       }
     }
 
@@ -122,10 +135,10 @@ export async function POST(req: NextRequest) {
 
     // Cap at 100 messages per thread to prevent abuse
     if (existing.length >= 100) {
-      return NextResponse.json(
+      return addCorsHeaders(NextResponse.json(
         { error: "Message thread is full (max 100 messages)" },
         { status: 429 }
-      );
+      ));
     }
 
     existing.push({
@@ -137,9 +150,9 @@ export async function POST(req: NextRequest) {
 
     await writeMessages(nullifierHash, existing);
 
-    return NextResponse.json({ ok: true, count: existing.length });
+    return addCorsHeaders(NextResponse.json({ ok: true, count: existing.length }));
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to process message";
-    return NextResponse.json({ error: message }, { status: 500 });
+    return addCorsHeaders(NextResponse.json({ error: message }, { status: 500 }));
   }
 }
