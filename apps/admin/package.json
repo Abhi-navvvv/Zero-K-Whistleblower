@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev --turbopack -p 3000",
-    "build": "pnpm --filter @zk-whistleblower/db generate && pnpm --filter @zk-whistleblower/db deploy && next build",
+    "build": "pnpm --filter @zk-whistleblower/db generate && pnpm --filter @zk-whistleblower/db run deploy && next build",
     "start": "next start",
     "copy-artifacts": "node scripts/copy-artifacts.mjs"
   },
