@@ -8,6 +8,7 @@ Anonymous whistleblowing platform using zero-knowledge proofs and blockchain. Me
 2. **Whistleblower submits**: The whistleblower generates a ZK proof (Groth16) proving they know a secret corresponding to a leaf in the Merkle tree — without revealing which leaf. They also produce a nullifier hash to prevent double submissions.
 3. **On-chain verification**: The smart contract verifies the ZK proof, checks the nullifier hasn't been used, and stores the report with an encrypted IPFS CID pointing to the evidence.
 4. **Reviewer access**: Authorized reviewers fetch the encrypted evidence from IPFS and decrypt it locally.
+5. **Anonymous messaging**: Encrypted follow-up messages are persisted in Postgres via Prisma so threads survive restarts and deploys.
 
 ## Tech Stack
 
@@ -40,6 +41,19 @@ pnpm install
 pnpm run compile:circuit    # compile circuit + generate verifier (first time only)
 ```
 
+Set `DATABASE_URL` to a Postgres connection string before running the apps, then create the Prisma client and run migrations:
+
+```bash
+pnpm db:generate
+pnpm db:migrate
+```
+
+For production (including Vercel), run deploy migrations instead of dev migrations:
+
+```bash
+pnpm db:deploy
+```
+
 ## Commands
 
 ```bash
@@ -64,6 +78,7 @@ pnpm --filter @zk-whistleblower/reporter copy-artifacts
 #    apps/admin/.env.local
 #    apps/reporter/.env.local
 #    → paste addresses printed by `pnpm run deploy:local`
+#    → set DATABASE_URL in the admin app environment for message storage
 
 # 4. Start app dev servers
 pnpm run dev:admin              # http://localhost:3000
@@ -100,6 +115,29 @@ pnpm --filter @zk-whistleblower/reporter dev -p 3100
 | snarkjs (browser) | Client-side Groth16 proof generation |
 | circomlibjs | Poseidon hashing in browser |
 | Tailwind CSS | Styling |
+
+## Vercel Database Setup
+
+For durable production persistence, use a managed Postgres service (Neon, Supabase, RDS, etc.) and set the env vars in the **admin** Vercel project:
+
+- `DATABASE_URL`: pooled/serverless connection string (used by runtime API routes)
+- `DIRECT_DATABASE_URL`: non-pooled direct connection string (used by Prisma migrations)
+- `REVIEWER_API_KEY`: required for admin-authenticated message operations
+
+In the **reporter** Vercel project, set:
+
+- `NEXT_PUBLIC_ADMIN_URL`: the deployed base URL of the admin app
+
+Recommended deploy flow:
+
+1. Set env vars in Vercel for both preview and production environments.
+2. Run `pnpm db:deploy` in CI/CD before or during deploy.
+3. Deploy admin and reporter apps.
+
+Notes:
+
+- The admin build now runs `pnpm --filter @zk-whistleblower/db generate` to ensure Prisma client generation on Vercel.
+- Do not rely on local Docker Postgres for Vercel persistence. Use an external managed Postgres instance.
 
 ## Circuit Details
 

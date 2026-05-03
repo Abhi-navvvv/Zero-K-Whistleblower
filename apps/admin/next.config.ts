@@ -13,7 +13,7 @@ const nextConfig: NextConfig = {
       "@react-native-async-storage/async-storage": "",
     },
   },
-  transpilePackages: ["@zk-whistleblower/shared", "@zk-whistleblower/ui"],
+  transpilePackages: ["@zk-whistleblower/shared", "@zk-whistleblower/ui", "@zk-whistleblower/db"],
   // Webpack fallback — only used when running `next build` (production) or without --turbopack
   webpack: (config) => {
     config.resolve.alias = {

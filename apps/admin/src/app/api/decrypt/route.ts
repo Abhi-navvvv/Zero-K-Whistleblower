@@ -3,6 +3,7 @@ import { decryptReportWithOrgPrivateKey, type EncryptedBlob, type PublicKeyEncry
 import { getOrgPrivateKeyConfig } from "@zk-whistleblower/shared/src/orgKeys";
 import { decryptFile, isReportManifest, type EncryptedFileBlob } from "@zk-whistleblower/shared/src/fileEncryption";
 import { type ReportManifest } from "@zk-whistleblower/shared/src/fileEncryption";
+import { deriveThreadId } from "@zk-whistleblower/shared/src/messaging";
 
 export const runtime = "nodejs";
 
@@ -136,6 +137,7 @@ export async function POST(req: NextRequest) {
         })),
         ...(manifest.recipient && { recipient: manifest.recipient }),
         ...(manifest.commKey && { commKey: manifest.commKey }),
+        ...(manifest.commKey && { threadId: await deriveThreadId(manifest.commKey) }),
       });
     }
 

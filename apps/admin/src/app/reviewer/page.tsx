@@ -12,7 +12,10 @@ import {
   encryptMessage,
   decryptMessage,
   fetchMessages,
+  fetchThreadSummary,
   postMessage,
+  deriveThreadId,
+  updateThreadState,
   type EncryptedMessage,
 } from "@zk-whistleblower/shared/src/messaging";
 
@@ -126,11 +129,13 @@ function ReportCard({
 
   // Two-way messaging state
   const [commKey, setCommKey] = useState("");
+  const [threadId, setThreadId] = useState("");
   const [replyText, setReplyText] = useState("");
   const [replyStatus, setReplyStatus] = useState<"idle" | "sending" | "sent" | "error">("idle");
   const [replyError, setReplyError] = useState("");
   const [threadMessages, setThreadMessages] = useState<{ from: string; text: string; timestamp: string }[]>([]);
   const [threadLoading, setThreadLoading] = useState(false);
+  const [threadArchived, setThreadArchived] = useState(false);
 
   const buildHeaders = useCallback((): Record<string, string> => {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
@@ -158,6 +163,7 @@ function ReportCard({
         files?: FileInfo[];
         recipient?: { id: string; name: string };
         commKey?: string;
+        threadId?: string;
       };
       if (!res.ok || typeof data.plaintext !== "string") {
         throw new Error(data.error || `Decrypt failed (${res.status})`);
@@ -170,8 +176,11 @@ function ReportCard({
       // Extract commKey for two-way messaging
       if (typeof data.commKey === "string" && data.commKey) {
         setCommKey(data.commKey);
+        const nextThreadId = typeof data.threadId === "string" && data.threadId ? data.threadId : await deriveThreadId(data.commKey);
+        setThreadId(nextThreadId);
+        setThreadArchived(false);
         // Auto-fetch existing messages for this thread
-        loadThread(data.commKey);
+        loadThread(nextThreadId, data.commKey);
       }
       setDecryptStatus("done");
     } catch (e: unknown) {
@@ -183,45 +192,63 @@ function ReportCard({
 
   // ── Two-way messaging handlers ──
 
-  const loadThread = useCallback(async (key: string) => {
+  const loadThread = useCallback(async (currentThreadId: string, currentCommKey: string) => {
     setThreadLoading(true);
     try {
-      const nullHash = report.nullifierHash.toString();
-      const encrypted = await fetchMessages("", nullHash);
+      const encrypted = await fetchMessages("", currentThreadId);
+      const thread = await fetchThreadSummary("", currentThreadId);
       const decrypted: { from: string; text: string; timestamp: string }[] = [];
       for (const msg of encrypted) {
         try {
-          const text = await decryptMessage(key, msg);
+          const text = await decryptMessage(currentCommKey, msg);
           decrypted.push({ from: msg.from, text, timestamp: msg.timestamp });
         } catch {
           decrypted.push({ from: msg.from, text: "[Decryption failed]", timestamp: msg.timestamp });
         }
       }
       setThreadMessages(decrypted);
+      setThreadArchived(thread?.status === "ARCHIVED");
+      await updateThreadState("", currentThreadId, "markRead", { sender: "reporter", apiKey: reviewerKey });
     } catch {
       // Silently fail — no messages yet is normal
     } finally {
       setThreadLoading(false);
     }
-  }, [report.nullifierHash]);
+  }, []);
 
   const handleReply = useCallback(async () => {
-    if (!replyText.trim() || !commKey) return;
+    if (!replyText.trim() || !commKey || !threadId) return;
     setReplyStatus("sending");
     setReplyError("");
     try {
       const encrypted = await encryptMessage(commKey, replyText.trim(), "admin");
-      await postMessage("", report.nullifierHash.toString(), encrypted, reviewerKey);
+      await postMessage("", threadId, encrypted, reviewerKey);
       setReplyText("");
       setReplyStatus("sent");
       // Refresh the thread
-      await loadThread(commKey);
+      await loadThread(threadId, commKey);
       setTimeout(() => setReplyStatus("idle"), 2000);
     } catch (e) {
       setReplyError(e instanceof Error ? e.message : String(e));
       setReplyStatus("error");
     }
-  }, [replyText, commKey, report.nullifierHash, reviewerKey, loadThread]);
+  }, [replyText, commKey, threadId, reviewerKey, loadThread]);
+
+  const handleArchiveToggle = useCallback(async () => {
+    if (!threadId) return;
+    setReplyError("");
+    try {
+      if (threadArchived) {
+        await updateThreadState("", threadId, "restore", { apiKey: reviewerKey });
+        setThreadArchived(false);
+      } else {
+        await updateThreadState("", threadId, "archive", { apiKey: reviewerKey });
+        setThreadArchived(true);
+      }
+    } catch (e) {
+      setReplyError(e instanceof Error ? e.message : String(e));
+    }
+  }, [threadArchived, threadId, reviewerKey]);
 
   const handleDownloadFile = useCallback(async (fileIndex: number, filename: string) => {
     setDownloadingFile(fileIndex);
@@ -353,12 +380,19 @@ function ReportCard({
           )}
 
           {/* ── Two-way messaging panel ── */}
-          {commKey && decryptStatus === "done" && (
+          {commKey && threadId && decryptStatus === "done" && (
             <div className="border-t border-white/10 pt-3 space-y-3">
               <p className="text-[10px] font-mono text-slate-500 uppercase tracking-widest flex items-center gap-2">
                 <Icon name="chat" className="text-sm" />
                 Anonymous Messaging Channel
               </p>
+              <button
+                className="btn-ghost text-[10px] px-3 py-1"
+                onClick={handleArchiveToggle}
+                disabled={!reviewerKey.trim()}
+              >
+                {threadArchived ? "Restore Thread" : "Archive Thread"}
+              </button>
 
               {/* Thread messages */}
               {threadLoading && (
@@ -369,11 +403,10 @@ function ReportCard({
                   {threadMessages.map((msg, i) => (
                     <div
                       key={i}
-                      className={`p-2 text-xs font-mono rounded ${
-                        msg.from === "admin"
-                          ? "bg-blue-500/10 border border-blue-500/20 text-blue-300 ml-4"
-                          : "bg-green-500/10 border border-green-500/20 text-green-300 mr-4"
-                      }`}
+                      className={`p-2 text-xs font-mono rounded ${msg.from === "admin"
+                        ? "bg-blue-500/10 border border-blue-500/20 text-blue-300 ml-4"
+                        : "bg-green-500/10 border border-green-500/20 text-green-300 mr-4"
+                        }`}
                     >
                       <div className="flex items-center justify-between mb-1">
                         <span className="text-[9px] font-bold uppercase tracking-widest">
@@ -706,228 +739,224 @@ export default function ReviewerPage() {
 
   return (
     <AdminGate requirePermission="canReviewReports">
-    <div className="space-y-12">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-white text-4xl font-black leading-none tracking-tighter mb-3 uppercase italic">
-            Reviewer
-          </h1>
-          <div className="flex items-center gap-4">
-            <span className="px-2 py-1 bg-green-500 text-black text-[10px] font-bold uppercase tracking-widest">
-              Live Feed
-            </span>
-            <p className="text-slate-500 text-sm font-mono tracking-tight">
-              On-chain whistleblower reports // Real-time updates
-            </p>
+      <div className="space-y-12">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-white text-4xl font-black leading-none tracking-tighter mb-3 uppercase italic">
+              Reviewer
+            </h1>
+            <div className="flex items-center gap-4">
+              <span className="px-2 py-1 bg-green-500 text-black text-[10px] font-bold uppercase tracking-widest">
+                Live Feed
+              </span>
+              <p className="text-slate-500 text-sm font-mono tracking-tight">
+                On-chain whistleblower reports // Real-time updates
+              </p>
+            </div>
+            <div className="flex items-center gap-3 mt-2">
+              <p className="text-slate-500 text-xs font-mono tracking-tight">
+                Active org: {selectedOrgId}
+              </p>
+              {myLeague ? (
+                <span className="px-2 py-0.5 text-[9px] font-black uppercase tracking-widest bg-purple-500 text-black">
+                  {myLeague.name}
+                </span>
+              ) : (
+                <span className="px-2 py-0.5 text-[9px] font-black uppercase tracking-widest bg-white text-black">
+                  Super Admin
+                </span>
+              )}
+            </div>
           </div>
-          <div className="flex items-center gap-3 mt-2">
-            <p className="text-slate-500 text-xs font-mono tracking-tight">
-              Active org: {selectedOrgId}
+          <div className="border border-white/10 bg-white/5 p-4 text-center">
+            <p className="text-2xl font-black text-white">
+              {reportCount?.toString() ?? "—"}
             </p>
-            {myLeague ? (
-              <span className="px-2 py-0.5 text-[9px] font-black uppercase tracking-widest bg-purple-500 text-black">
-                {myLeague.name}
-              </span>
-            ) : (
-              <span className="px-2 py-0.5 text-[9px] font-black uppercase tracking-widest bg-white text-black">
-                Super Admin
-              </span>
-            )}
+            <p className="text-[10px] font-mono text-slate-500 uppercase tracking-widest">Reports</p>
           </div>
         </div>
-        <div className="border border-white/10 bg-white/5 p-4 text-center">
-          <p className="text-2xl font-black text-white">
-            {reportCount?.toString() ?? "—"}
-          </p>
-          <p className="text-[10px] font-mono text-slate-500 uppercase tracking-widest">Reports</p>
-        </div>
-      </div>
 
-      {/* Reviewer authentication */}
-      <section className="card space-y-3">
-        <div>
-          <p className="step-label">AUTHENTICATION</p>
-          <h2 className="section-heading">Reviewer Access</h2>
-        </div>
-        <label className="label">Reviewer API Key</label>
-        <input
-          className="input font-mono text-xs"
-          type="password"
-          placeholder="Enter your reviewer API key to decrypt reports"
-          value={reviewerKeyInput}
-          onChange={(e) => {
-            const next = e.target.value;
-            setReviewerKeyInput(next);
-            setReviewerKeyTouchedAfterSubmit(next.trim() !== reviewerKey.trim());
-          }}
-        />
-        <div className="flex flex-wrap gap-2">
-          <button
-            className="btn-ghost text-xs px-4 py-2"
-            onClick={() => {
-              const normalizedKey = reviewerKeyInput.trim();
-              setReviewerKey(normalizedKey);
-              setReviewerKeyInput(normalizedKey);
-              setReviewerKeyTouchedAfterSubmit(false);
+        {/* Reviewer authentication */}
+        <section className="card space-y-3">
+          <div>
+            <p className="step-label">AUTHENTICATION</p>
+            <h2 className="section-heading">Reviewer Access</h2>
+          </div>
+          <label className="label">Reviewer API Key</label>
+          <input
+            className="input font-mono text-xs"
+            type="password"
+            placeholder="Enter your reviewer API key to decrypt reports"
+            value={reviewerKeyInput}
+            onChange={(e) => {
+              const next = e.target.value;
+              setReviewerKeyInput(next);
+              setReviewerKeyTouchedAfterSubmit(next.trim() !== reviewerKey.trim());
             }}
-            disabled={!reviewerKeyInput.trim()}
-          >
-            {reviewerKey ? "Update key" : "Submit key"}
-          </button>
-          {reviewerKey && (
+          />
+          <div className="flex flex-wrap gap-2">
             <button
               className="btn-ghost text-xs px-4 py-2"
               onClick={() => {
-                setReviewerKey("");
-                setReviewerKeyInput("");
+                const normalizedKey = reviewerKeyInput.trim();
+                setReviewerKey(normalizedKey);
+                setReviewerKeyInput(normalizedKey);
                 setReviewerKeyTouchedAfterSubmit(false);
               }}
+              disabled={!reviewerKeyInput.trim()}
             >
-              Clear key
+              {reviewerKey ? "Update key" : "Submit key"}
             </button>
-          )}
-        </div>
-        {!reviewerKey && (
-          <p className="text-[10px] font-mono text-slate-500">
-            Submit your reviewer key before decrypting reports.
-          </p>
-        )}
-        {reviewerKey && !reviewerKeyTouchedAfterSubmit && (
-          <p className="text-[10px] font-mono text-green-400">
-            Key submitted. You can now decrypt reports.
-          </p>
-        )}
-        {reviewerKeyTouchedAfterSubmit && (
-          <p className="text-[10px] font-mono text-yellow-400">
-            Key input changed. Click update key to apply it.
-          </p>
-        )}
-        <p className="text-[10px] font-mono text-slate-600">
-          This key is never stored — it lives only in memory while this page is open.
-          Contact your org admin if you don't have one.
-        </p>
-      </section>
-
-      {/* ── Filter tabs ── */}
-      {reports.length > 0 && (
-        <section className="space-y-3">
-          <div className="flex items-center gap-2">
-            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mr-2">Filter:</p>
-            
-            <button
-              className={`px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest transition-all ${
-                filterMode === "mine"
-                  ? "bg-white text-black"
-                  : "bg-white/5 text-slate-400 border border-white/10 hover:bg-white/10"
-              }`}
-              onClick={() => setFilterMode("mine")}
-            >
-              {myLeague ? `My Reports (${myLeague.name})` : "All Reports"}
-            </button>
-
-            {isSuperAdmin && discoveredLeagues.leagues.length > 0 && (
-              <>
-                {discoveredLeagues.hasGeneral && (
-                  <button
-                    className={`px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest transition-all ${
-                      filterMode === "__general__"
-                        ? "bg-white text-black"
-                        : "bg-white/5 text-slate-400 border border-white/10 hover:bg-white/10"
-                    }`}
-                    onClick={() => setFilterMode("__general__")}
-                  >
-                    General
-                  </button>
-                )}
-                {discoveredLeagues.leagues.map((l) => (
-                  <button
-                    key={l.id}
-                    className={`px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest transition-all ${
-                      filterMode === l.id
-                        ? "bg-purple-500 text-black"
-                        : "bg-purple-500/10 text-purple-300 border border-purple-500/20 hover:bg-purple-500/20"
-                    }`}
-                    onClick={() => setFilterMode(l.id)}
-                  >
-                    {l.name}
-                  </button>
-                ))}
-                <button
-                  className={`px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest transition-all ${
-                    filterMode === "all"
-                      ? "bg-white text-black"
-                      : "bg-white/5 text-slate-400 border border-white/10 hover:bg-white/10"
-                  }`}
-                  onClick={() => setFilterMode("all")}
-                >
-                  All
-                </button>
-              </>
+            {reviewerKey && (
+              <button
+                className="btn-ghost text-xs px-4 py-2"
+                onClick={() => {
+                  setReviewerKey("");
+                  setReviewerKeyInput("");
+                  setReviewerKeyTouchedAfterSubmit(false);
+                }}
+              >
+                Clear key
+              </button>
             )}
           </div>
-
-          {recipientsLoading && (
-            <p className="text-[9px] font-mono text-slate-600 animate-pulse">
-              Resolving report routing metadata…
+          {!reviewerKey && (
+            <p className="text-[10px] font-mono text-slate-500">
+              Submit your reviewer key before decrypting reports.
             </p>
           )}
-
+          {reviewerKey && !reviewerKeyTouchedAfterSubmit && (
+            <p className="text-[10px] font-mono text-green-400">
+              Key submitted. You can now decrypt reports.
+            </p>
+          )}
+          {reviewerKeyTouchedAfterSubmit && (
+            <p className="text-[10px] font-mono text-yellow-400">
+              Key input changed. Click update key to apply it.
+            </p>
+          )}
           <p className="text-[10px] font-mono text-slate-600">
-            Showing {filteredReports.length} of {reports.length} reports
+            This key is never stored — it lives only in memory while this page is open.
+            Contact your org admin if you don't have one.
           </p>
         </section>
-      )}
 
-      {loading && (
-        <div className="card animate-pulse text-center text-slate-500 font-mono text-sm">
-          LOADING_REPORTS...
-        </div>
-      )}
+        {/* ── Filter tabs ── */}
+        {reports.length > 0 && (
+          <section className="space-y-3">
+            <div className="flex items-center gap-2">
+              <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mr-2">Filter:</p>
 
-      {error && (
-        <div className="card bg-red-900/20 border-red-500/30 text-sm text-red-400">{error}</div>
-      )}
+              <button
+                className={`px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest transition-all ${filterMode === "mine"
+                  ? "bg-white text-black"
+                  : "bg-white/5 text-slate-400 border border-white/10 hover:bg-white/10"
+                  }`}
+                onClick={() => setFilterMode("mine")}
+              >
+                {myLeague ? `My Reports (${myLeague.name})` : "All Reports"}
+              </button>
 
-      {!loading && reports.length === 0 && !error && (
-        <div className="card text-center text-slate-500">
-          <Icon name="inbox" className="text-4xl text-white/20 mb-4 block" />
-          No reports submitted yet. Be the first whistleblower.
-        </div>
-      )}
+              {isSuperAdmin && discoveredLeagues.leagues.length > 0 && (
+                <>
+                  {discoveredLeagues.hasGeneral && (
+                    <button
+                      className={`px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest transition-all ${filterMode === "__general__"
+                        ? "bg-white text-black"
+                        : "bg-white/5 text-slate-400 border border-white/10 hover:bg-white/10"
+                        }`}
+                      onClick={() => setFilterMode("__general__")}
+                    >
+                      General
+                    </button>
+                  )}
+                  {discoveredLeagues.leagues.map((l) => (
+                    <button
+                      key={l.id}
+                      className={`px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest transition-all ${filterMode === l.id
+                        ? "bg-purple-500 text-black"
+                        : "bg-purple-500/10 text-purple-300 border border-purple-500/20 hover:bg-purple-500/20"
+                        }`}
+                      onClick={() => setFilterMode(l.id)}
+                    >
+                      {l.name}
+                    </button>
+                  ))}
+                  <button
+                    className={`px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest transition-all ${filterMode === "all"
+                      ? "bg-white text-black"
+                      : "bg-white/5 text-slate-400 border border-white/10 hover:bg-white/10"
+                      }`}
+                    onClick={() => setFilterMode("all")}
+                  >
+                    All
+                  </button>
+                </>
+              )}
+            </div>
 
-      {!loading && reports.length > 0 && filteredReports.length === 0 && (
-        <div className="card text-center text-slate-500 space-y-2">
-          <Icon name="inbox" className="text-4xl text-white/20 block mx-auto" />
-          <p className="text-sm">No reports match your current filter.</p>
-          {!isSuperAdmin && myLeague && (
+            {recipientsLoading && (
+              <p className="text-[9px] font-mono text-slate-600 animate-pulse">
+                Resolving report routing metadata…
+              </p>
+            )}
+
             <p className="text-[10px] font-mono text-slate-600">
-              You are viewing reports for <strong className="text-purple-400">{myLeague.name}</strong>.
-              No reports have been directed to your department yet.
+              Showing {filteredReports.length} of {reports.length} reports
             </p>
-          )}
+          </section>
+        )}
+
+        {loading && (
+          <div className="card animate-pulse text-center text-slate-500 font-mono text-sm">
+            LOADING_REPORTS...
+          </div>
+        )}
+
+        {error && (
+          <div className="card bg-red-900/20 border-red-500/30 text-sm text-red-400">{error}</div>
+        )}
+
+        {!loading && reports.length === 0 && !error && (
+          <div className="card text-center text-slate-500">
+            <Icon name="inbox" className="text-4xl text-white/20 mb-4 block" />
+            No reports submitted yet. Be the first whistleblower.
+          </div>
+        )}
+
+        {!loading && reports.length > 0 && filteredReports.length === 0 && (
+          <div className="card text-center text-slate-500 space-y-2">
+            <Icon name="inbox" className="text-4xl text-white/20 block mx-auto" />
+            <p className="text-sm">No reports match your current filter.</p>
+            {!isSuperAdmin && myLeague && (
+              <p className="text-[10px] font-mono text-slate-600">
+                You are viewing reports for <strong className="text-purple-400">{myLeague.name}</strong>.
+                No reports have been directed to your department yet.
+              </p>
+            )}
+          </div>
+        )}
+
+        <div className="space-y-4">
+          {[...filteredReports].reverse().map((r) => (
+            <ReportCard
+              key={r.id.toString()}
+              report={r}
+              orgId={selectedOrgId}
+              reviewerKey={reviewerKey}
+              recipient={recipientMap[r.id.toString()]}
+              canDecrypt={canDecryptReport(r)}
+            />
+          ))}
         </div>
-      )}
 
-      <div className="space-y-4">
-        {[...filteredReports].reverse().map((r) => (
-          <ReportCard
-            key={r.id.toString()}
-            report={r}
-            orgId={selectedOrgId}
-            reviewerKey={reviewerKey}
-            recipient={recipientMap[r.id.toString()]}
-            canDecrypt={canDecryptReport(r)}
-          />
-        ))}
+        {reports.length > 0 && (
+          <p className="text-center text-[10px] font-mono text-slate-500 uppercase tracking-widest">
+            Reports are end-to-end encrypted. Only authorised reviewers can
+            decrypt the IPFS evidence.
+          </p>
+        )}
       </div>
-
-      {reports.length > 0 && (
-        <p className="text-center text-[10px] font-mono text-slate-500 uppercase tracking-widest">
-          Reports are end-to-end encrypted. Only authorised reviewers can
-          decrypt the IPFS evidence.
-        </p>
-      )}
-    </div>
     </AdminGate>
   );
 }

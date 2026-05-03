@@ -11,6 +11,9 @@
     "decrypt": "npx tsx scripts/decrypt-secret.ts",
     "deploy:local": "npx hardhat run --network localhost scripts/deploy.ts",
     "deploy:sepolia": "npx hardhat run --network sepolia scripts/deploy.ts",
+    "db:generate": "pnpm --filter @zk-whistleblower/db prisma generate",
+    "db:migrate": "pnpm --filter @zk-whistleblower/db prisma migrate dev",
+    "db:deploy": "pnpm --filter @zk-whistleblower/db prisma migrate deploy",
     "dev:admin": "pnpm --filter @zk-whistleblower/admin dev",
     "dev:reporter": "pnpm --filter @zk-whistleblower/reporter dev",
     "dev": "pnpm -r dev",
@@ -50,7 +53,12 @@
       "wagmi": "2.19.5",
       "viem": "2.47.0",
       "@tanstack/react-query": "^5.91.3"
-    }
+    },
+    "ignoredBuiltDependencies": [
+      "@prisma/client",
+      "@prisma/engines",
+      "prisma"
+    ]
   },
   "type": "module"
 }
