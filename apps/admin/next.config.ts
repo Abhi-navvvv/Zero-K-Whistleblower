@@ -7,6 +7,9 @@ const nextConfig: NextConfig = {
     optimizePackageImports: [
       "@zk-whistleblower/shared",
     ],
+    outputFileTracingIncludes: {
+      "/api/**/*": ["./node_modules/.prisma/client/**/*", "../../node_modules/.prisma/client/**/*"],
+    },
   },
   turbopack: {
     resolveAlias: {
