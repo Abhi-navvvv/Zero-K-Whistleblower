@@ -33,6 +33,39 @@ async function fetchJson<T>(url: string): Promise<T> {
   return (await res.json()) as T;
 }
 
+interface CircuitArtifacts {
+  wasm: Uint8Array;
+  zkey: Uint8Array;
+  vKey: unknown;
+}
+
+let snarkjsPromise: Promise<any> | null = null;
+let circuitArtifactsPromise: Promise<CircuitArtifacts> | null = null;
+
+async function loadSnarkjs() {
+  if (!snarkjsPromise) {
+    snarkjsPromise = import("snarkjs");
+  }
+  return snarkjsPromise;
+}
+
+async function loadCircuitArtifacts(): Promise<CircuitArtifacts> {
+  if (!circuitArtifactsPromise) {
+    circuitArtifactsPromise = Promise.all([
+      fetchBytes("/circuits/membership.wasm"),
+      fetchBytes("/circuits/membership_final.zkey"),
+      fetchJson<unknown>("/circuits/verification_key.json"),
+    ])
+      .then(([wasm, zkey, vKey]) => ({ wasm, zkey, vKey }))
+      .catch((err) => {
+        circuitArtifactsPromise = null;
+        throw err;
+      });
+  }
+
+  return circuitArtifactsPromise;
+}
+
 export async function generateZKProof(input: ProofInput): Promise<FormattedProof> {
   const { initPoseidon } = await import("./poseidon");
   await initPoseidon();
@@ -54,12 +87,8 @@ export async function generateZKProof(input: ProofInput): Promise<FormattedProof
 
   // snarkjs is huge, so we import it dynamically to keep it out of the SSR bundle
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const snarkjs = await import("snarkjs") as any;
-  const [wasm, zkey, vKey] = await Promise.all([
-    fetchBytes("/circuits/membership.wasm"),
-    fetchBytes("/circuits/membership_final.zkey"),
-    fetchJson<unknown>("/circuits/verification_key.json"),
-  ]);
+  const snarkjs = await loadSnarkjs() as any;
+  const { wasm, zkey, vKey } = await loadCircuitArtifacts();
 
   const { proof, publicSignals } = await snarkjs.groth16.fullProve(
     circuitInput,
