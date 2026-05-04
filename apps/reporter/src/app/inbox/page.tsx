@@ -3,14 +3,14 @@
 import { useState, useCallback } from "react";
 import { Icon } from "@zk-whistleblower/ui";
 import { useOrg } from "@zk-whistleblower/ui";
-import { initPoseidon, poseidonHash } from "@zk-whistleblower/shared/src/poseidon";
-import { getCurrentEpoch } from "@zk-whistleblower/shared/src/epoch";
 import {
   deriveCommKey,
+  deriveThreadId,
   encryptMessage,
   decryptMessage,
   fetchMessages,
   postMessage,
+  updateThreadState,
 } from "@zk-whistleblower/shared/src/messaging";
 import type { MemberKeyFile } from "@zk-whistleblower/shared/src/secretGen";
 
@@ -31,7 +31,7 @@ export default function InboxPage() {
   const [keyFileName, setKeyFileName] = useState("");
   const [secret, setSecret] = useState("");
   const [commKey, setCommKey] = useState("");
-  const [nullifierHash, setNullifierHash] = useState("");
+  const [threadId, setThreadId] = useState("");
   const [unlocked, setUnlocked] = useState(false);
   const [unlockError, setUnlockError] = useState("");
   const [unlocking, setUnlocking] = useState(false);
@@ -64,18 +64,15 @@ export default function InboxPage() {
         const secretBig = BigInt(parsed.secret.trim());
         setSecret(secretBig.toString());
 
-        // Derive nullifierHash and commKey
-        await initPoseidon();
-        const epoch = getCurrentEpoch();
-        const nullHash = poseidonHash([secretBig, BigInt(epoch)]);
-        setNullifierHash(nullHash.toString());
-
+        // Derive stable message thread and commKey
         const key = await deriveCommKey(secretBig);
         setCommKey(key);
+        const nextThreadId = await deriveThreadId(key);
+        setThreadId(nextThreadId);
         setUnlocked(true);
 
         // Immediately fetch messages
-        await loadMessages(key, nullHash.toString());
+        await loadMessages(key, nextThreadId);
       } else if ((parsed as Record<string, unknown>).encrypted) {
         setUnlockError("This key file uses the old encrypted format. Please ask your admin to re-generate your access file.");
       } else {
@@ -106,6 +103,7 @@ export default function InboxPage() {
         }
       }
       setMessages(decrypted);
+      await updateThreadState(adminBaseUrl, nullHash, "markRead", { sender: "admin" });
     } catch {
       // No messages yet is normal
     } finally {
@@ -114,30 +112,30 @@ export default function InboxPage() {
   };
 
   const handleRefresh = useCallback(async () => {
-    if (commKey && nullifierHash) {
-      await loadMessages(commKey, nullifierHash);
+    if (commKey && threadId) {
+      await loadMessages(commKey, threadId);
     }
-  }, [commKey, nullifierHash]);
+  }, [commKey, threadId]);
 
   // ─── Reply handler ─────────────────────────────────────────────────────────
 
   const handleReply = useCallback(async () => {
-    if (!replyText.trim() || !commKey || !nullifierHash) return;
+    if (!replyText.trim() || !commKey || !threadId) return;
     setReplyStatus("sending");
     setReplyError("");
     try {
       const encrypted = await encryptMessage(commKey, replyText.trim(), "reporter");
-      await postMessage(adminBaseUrl, nullifierHash, encrypted);
+      await postMessage(adminBaseUrl, threadId, encrypted);
       setReplyText("");
       setReplyStatus("sent");
       // Refresh
-      await loadMessages(commKey, nullifierHash);
+      await loadMessages(commKey, threadId);
       setTimeout(() => setReplyStatus("idle"), 2000);
     } catch (e) {
       setReplyError(e instanceof Error ? e.message : String(e));
       setReplyStatus("error");
     }
-  }, [replyText, commKey, nullifierHash, adminBaseUrl]);
+  }, [replyText, commKey, threadId, adminBaseUrl]);
 
   // ─── Render ────────────────────────────────────────────────────────────────
 
@@ -219,11 +217,10 @@ export default function InboxPage() {
               {messages.map((msg, i) => (
                 <div
                   key={i}
-                  className={`p-3 text-xs font-mono rounded ${
-                    msg.from === "admin"
-                      ? "bg-blue-500/10 border border-blue-500/20 text-blue-300 mr-8"
-                      : "bg-green-500/10 border border-green-500/20 text-green-300 ml-8"
-                  }`}
+                  className={`p-3 text-xs font-mono rounded ${msg.from === "admin"
+                    ? "bg-blue-500/10 border border-blue-500/20 text-blue-300 mr-8"
+                    : "bg-green-500/10 border border-green-500/20 text-green-300 ml-8"
+                    }`}
                 >
                   <div className="flex items-center justify-between mb-1">
                     <span className="text-[9px] font-bold uppercase tracking-widest">

@@ -43,6 +43,18 @@ export async function deriveCommKey(secret: bigint): Promise<string> {
 }
 
 /**
+ * Derives a stable message-thread identifier from the shared commKey.
+ * The thread ID is what gets stored in the database and used to fetch messages.
+ */
+export async function deriveThreadId(commKeyHex: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const material = encoder.encode("zk-thread:" + commKeyHex.toLowerCase());
+  const hashBuf = await crypto.subtle.digest("SHA-256", material);
+  const bytes = new Uint8Array(hashBuf);
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
  * Import a hex commKey string into a CryptoKey for AES-GCM operations.
  */
 async function importCommKey(commKeyHex: string): Promise<CryptoKey> {
@@ -119,14 +131,14 @@ export async function decryptMessage(
 // ─── API helpers ─────────────────────────────────────────────────────────────
 
 /**
- * Fetch messages for a given nullifierHash from the messages API.
+ * Fetch messages for a given thread ID from the messages API.
  */
 export async function fetchMessages(
   baseUrl: string,
-  nullifierHash: string
+  threadId: string
 ): Promise<EncryptedMessage[]> {
   const res = await fetch(
-    `${baseUrl}/api/messages?nullifier=${encodeURIComponent(nullifierHash)}`
+    `${baseUrl}/api/messages?threadId=${encodeURIComponent(threadId)}`
   );
   if (!res.ok) {
     if (res.status === 404) return [];
@@ -136,25 +148,65 @@ export async function fetchMessages(
   return data.messages ?? [];
 }
 
+export async function fetchThreadSummary(
+  baseUrl: string,
+  threadId: string
+): Promise<{ status?: string; messageCount?: number } | null> {
+  const res = await fetch(
+    `${baseUrl}/api/messages?threadId=${encodeURIComponent(threadId)}`
+  );
+  if (!res.ok) {
+    if (res.status === 404) return null;
+    throw new Error(`Failed to fetch thread summary: ${res.statusText}`);
+  }
+  const data = await res.json() as { thread?: { status?: string; messageCount?: number } };
+  return data.thread ?? null;
+}
+
 /**
- * Post an encrypted message for a given nullifierHash.
+ * Post an encrypted message for a given thread ID.
  */
 export async function postMessage(
   baseUrl: string,
-  nullifierHash: string,
+  threadId: string,
   message: EncryptedMessage,
   apiKey?: string
 ): Promise<void> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (apiKey) headers["x-api-key"] = apiKey;
-  
+
   const res = await fetch(`${baseUrl}/api/messages`, {
     method: "POST",
     headers,
-    body: JSON.stringify({ nullifierHash, message }),
+    body: JSON.stringify({ threadId, message }),
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({})) as { error?: string };
     throw new Error(data.error || `Failed to post message: ${res.statusText}`);
+  }
+}
+
+export async function updateThreadState(
+  baseUrl: string,
+  threadId: string,
+  action: "markRead" | "archive" | "restore",
+  options?: { sender?: "admin" | "reporter"; apiKey?: string }
+): Promise<void> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (options?.apiKey) headers["x-api-key"] = options.apiKey;
+
+  const res = await fetch(`${baseUrl}/api/messages`, {
+    method: "PATCH",
+    headers,
+    body: JSON.stringify({
+      threadId,
+      action,
+      ...(options?.sender ? { sender: options.sender } : {}),
+    }),
+  });
+
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({})) as { error?: string };
+    throw new Error(data.error || `Failed to update thread: ${res.statusText}`);
   }
 }
