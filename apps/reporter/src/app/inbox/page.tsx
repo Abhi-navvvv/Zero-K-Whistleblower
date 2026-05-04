@@ -44,7 +44,9 @@ export default function InboxPage() {
   const [replyError, setReplyError] = useState("");
 
   // Determine the admin API base URL (same as relayer)
-  const adminBaseUrl = process.env.NEXT_PUBLIC_ADMIN_URL || "";
+  const adminBaseUrl =
+    process.env.NEXT_PUBLIC_ADMIN_URL?.trim() ||
+    "https://zero-k-whistleblower-admin.vercel.app";
 
   // ─── Key file upload ───────────────────────────────────────────────────────
 
