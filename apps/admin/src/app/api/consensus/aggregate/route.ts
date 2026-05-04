@@ -3,6 +3,11 @@ import { computeConsensusResult, buildConsensusCommitment } from "@zk-whistleblo
 
 export const runtime = "nodejs";
 
+function bigintSafe(obj: unknown): unknown {
+  return JSON.parse(JSON.stringify(obj, (_k, v) => (typeof v === "bigint" ? v.toString() : v)));
+}
+
+
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null);
   if (!body) return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
@@ -12,7 +17,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const { request, decision } = await computeConsensusResult(consensusRequestId);
-    if (!decision) return NextResponse.json({ ok: true, message: "No decisive result yet", data: { request } });
+    if (!decision) return NextResponse.json({ ok: true, message: "No decisive result yet", data: { request: bigintSafe(request) } });
 
     // produce commitment to be signed by admins: reportId, decision, timestamp, chainId
     const reportId = request.onChainReportId ? Number(request.onChainReportId) : null;
