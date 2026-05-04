@@ -25,6 +25,21 @@ enum ThreadStatus {
   ARCHIVED
 }
 
+enum ConsensusStatus {
+  PENDING_REVIEW
+  APPROVED
+  REJECTED
+  ESCALATED
+  TIMEOUT
+}
+
+enum AdminVote {
+  APPROVE
+  REJECT
+  ESCALATE
+  ABSTAIN
+}
+
 model MessageThread {
   id            String   @id
   status        ThreadStatus @default(ACTIVE)
@@ -54,4 +69,47 @@ model Message {
   @@index([threadId, timestamp])
   @@index([sender, timestamp])
   @@index([deliveryState, timestamp])
+}
+
+model ReportConsensusRequest {
+  id             String          @id @default(cuid())
+  onChainReportId BigInt?
+  reporterThreadId String?
+  selectedAdmins  String[]        @default([])
+  status          ConsensusStatus @default(PENDING_REVIEW)
+  metadata        Json?
+  createdAt       DateTime        @default(now())
+  decidedAt       DateTime?
+
+  votes AdminConsensusVote[]
+  decision AdminDecision?
+
+  @@index([onChainReportId])
+  @@index([status, createdAt])
+}
+
+model AdminConsensusVote {
+  id                    String    @id @default(cuid())
+  consensusRequestId    String
+  consensusRequest      ReportConsensusRequest @relation(fields: [consensusRequestId], references: [id], onDelete: Cascade)
+  adminAddress          String
+  vote                  AdminVote
+  reason                String?
+  encryptedReason       String?
+  votedAt               DateTime  @default(now())
+  signature             String?
+
+  @@index([consensusRequestId, adminAddress])
+  @@index([adminAddress, votedAt])
+}
+
+model AdminDecision {
+  id                  String   @id @default(cuid())
+  consensusRequestId  String   @unique
+  consensusRequest    ReportConsensusRequest @relation(fields: [consensusRequestId], references: [id], onDelete: Cascade)
+  action              String
+  actionMetadata      Json?
+  decidedByConsensus  Int?
+  executedAt          DateTime?
+  executedBy          String?
 }
