@@ -361,19 +361,102 @@ function CastVotePanel({ requestId }: { requestId: string }) {
 
 // ─── Step 3: Aggregate & Commit ─────────────────────────────────────────────
 
+interface TallyInfo {
+  counts: Record<VoteOption, number>;
+  assigned: number;
+  voted: number;
+  majorityThreshold: number | null;
+}
+
+function VoteTallyDisplay({ tally }: { tally: TallyInfo }) {
+  const { counts, assigned, voted, majorityThreshold } = tally;
+  const needsToWin = majorityThreshold ?? 1;
+
+  // Which option is leading?
+  const leading = (Object.entries(counts) as [VoteOption, number][]).reduce(
+    (best, [v, c]) => (c > best[1] ? [v, c] : best),
+    ["APPROVE", 0] as [VoteOption, number]
+  );
+  const votesNeeded = Math.max(0, needsToWin - leading[1]);
+
+  return (
+    <div className="space-y-4">
+      {/* Header stats */}
+      <div className="grid grid-cols-3 gap-3">
+        <div className="bg-white/5 border border-white/10 p-3 text-center">
+          <p className="text-2xl font-black text-white">{voted}</p>
+          <p className="text-[10px] font-mono text-slate-500 uppercase tracking-widest mt-1">Voted</p>
+        </div>
+        <div className="bg-white/5 border border-white/10 p-3 text-center">
+          <p className="text-2xl font-black text-white">{assigned > 0 ? assigned : "∞"}</p>
+          <p className="text-[10px] font-mono text-slate-500 uppercase tracking-widest mt-1">Assigned</p>
+        </div>
+        <div className="bg-white/5 border border-white/10 p-3 text-center">
+          <p className="text-2xl font-black text-purple-400">{needsToWin}</p>
+          <p className="text-[10px] font-mono text-slate-500 uppercase tracking-widest mt-1">For Majority</p>
+        </div>
+      </div>
+
+      {/* Per-option bars */}
+      <div className="space-y-2">
+        {(Object.entries(counts) as [VoteOption, number][]).map(([v, count]) => {
+          const pct = assigned > 0 ? Math.round((count / assigned) * 100) : 0;
+          const reachedMajority = count >= needsToWin;
+          return (
+            <div key={v} className="space-y-1">
+              <div className="flex justify-between items-center">
+                <span className={`text-[10px] font-bold uppercase tracking-widest ${
+                  reachedMajority ? "text-white" : "text-slate-500"
+                }`}>
+                  {v} {reachedMajority && "✓ MAJORITY"}
+                </span>
+                <span className="text-[10px] font-mono text-slate-400">
+                  {count} / {assigned > 0 ? assigned : "?"}
+                </span>
+              </div>
+              <div className="h-2 bg-white/5 border border-white/10 overflow-hidden">
+                <div
+                  className={`h-full transition-all duration-500 ${
+                    v === "APPROVE" ? "bg-green-500" :
+                    v === "REJECT" ? "bg-red-500" :
+                    v === "ESCALATE" ? "bg-yellow-500" : "bg-slate-500"
+                  } ${reachedMajority ? "opacity-100" : "opacity-50"}`}
+                  style={{ width: `${pct}%` }}
+                />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Status message */}
+      {assigned > 0 && (
+        <div className={`p-3 text-xs font-mono border ${
+          leading[1] >= needsToWin
+            ? "bg-green-900/20 border-green-500/30 text-green-400"
+            : votesNeeded === 1
+            ? "bg-yellow-900/20 border-yellow-500/30 text-yellow-400"
+            : "bg-white/5 border-white/10 text-slate-400"
+        }`}>
+          {leading[1] >= needsToWin
+            ? `✓ ${leading[0]} has reached majority (${leading[1]}/${assigned} votes). Ready to anchor.`
+            : `${voted}/${assigned} admin${voted !== 1 ? "s" : ""} voted · ${leading[0]} leads with ${leading[1]} vote${leading[1] !== 1 ? "s" : ""} · need ${votesNeeded} more for majority`
+          }
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AggregatePanel({ requestId }: { requestId: string }) {
   const [chainId, setChainId] = useState("11155111");
-  const [tally, setTally] = useState<VoteTally | null>(null);
+  const [tally, setTally] = useState<TallyInfo | null>(null);
   const [result, setResult] = useState<AggregateResult | null>(null);
-  const [noDecision, setNoDecision] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
 
   const handleAggregate = useCallback(async () => {
     setError("");
-    setResult(null);
-    setTally(null);
-    setNoDecision(false);
     setPending(true);
     try {
       const res = await fetch("/api/consensus/aggregate", {
@@ -384,14 +467,13 @@ function AggregatePanel({ requestId }: { requestId: string }) {
       const data = await res.json();
       if (!res.ok || !data.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
 
-      if (data.message === "No decisive result yet") {
-        setNoDecision(true);
-        const votes = data.data?.request?.votes ?? [];
-        const counts: VoteTally = { APPROVE: 0, REJECT: 0, ESCALATE: 0, ABSTAIN: 0 };
-        for (const v of votes) counts[v.vote as VoteOption] = (counts[v.vote as VoteOption] ?? 0) + 1;
-        setTally(counts);
-      } else {
+      // Always update tally
+      if (data.tally) setTally(data.tally as TallyInfo);
+
+      if (data.decided) {
         setResult(data.data as AggregateResult);
+      } else {
+        setResult(null);
       }
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));
@@ -405,48 +487,31 @@ function AggregatePanel({ requestId }: { requestId: string }) {
       <div className="flex justify-between items-start mb-2">
         <div>
           <p className="step-label">03_AGGREGATE</p>
-          <h2 className="section-heading">Compute & Anchor Decision</h2>
+          <h2 className="section-heading">Live Tally & Decision</h2>
         </div>
         <Icon name="lock" className="text-white/20 text-2xl" />
       </div>
       <p className="text-xs text-slate-500 font-mono">
-        Once a majority is reached, compute the keccak256 commitment and anchor the decision on-chain.
+        Refresh to see the current vote tally. Once majority is reached, the commitment is computed and ready to anchor on-chain.
       </p>
 
-      <div className="space-y-2">
-        <label className="label">Chain ID</label>
-        <input
-          id="aggregate-chain-id"
-          className="input font-mono text-xs"
-          placeholder="11155111 (Sepolia)"
-          value={chainId}
-          onChange={(e) => setChainId(e.target.value)}
-        />
+      <div className="flex gap-3 items-end">
+        <div className="flex-1 space-y-2">
+          <label className="label">Chain ID</label>
+          <input
+            id="aggregate-chain-id"
+            className="input font-mono text-xs"
+            placeholder="11155111 (Sepolia)"
+            value={chainId}
+            onChange={(e) => setChainId(e.target.value)}
+          />
+        </div>
+        <button id="aggregate-btn" className="btn-ghost shrink-0" onClick={handleAggregate} disabled={pending}>
+          {pending ? "Refreshing…" : tally ? "↻ Refresh" : "Check Status"}
+        </button>
       </div>
 
-      <button id="aggregate-btn" className="btn-ghost" onClick={handleAggregate} disabled={pending}>
-        {pending ? "Computing…" : "Compute Consensus Result"}
-      </button>
-
-      {tally && (
-        <div className="space-y-3">
-          <p className="label">Current Vote Tally</p>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            {(Object.entries(tally) as [VoteOption, number][]).map(([v, count]) => (
-              <div key={v} className={`border p-3 text-center ${VOTE_STYLES[v]}`}>
-                <p className="text-xl font-black">{count}</p>
-                <p className="text-[10px] uppercase tracking-widest mt-1">{v}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {noDecision && (
-        <div className="bg-yellow-900/20 border border-yellow-500/30 p-3 text-xs text-yellow-400 font-mono">
-          ⚠ No decisive majority reached yet. More votes are needed.
-        </div>
-      )}
+      {tally && <VoteTallyDisplay tally={tally} />}
 
       {result && (
         <div className="bg-green-900/20 border border-green-500/30 p-4 space-y-3">
