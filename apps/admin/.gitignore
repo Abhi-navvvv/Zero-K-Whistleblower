@@ -6,3 +6,5 @@ node_modules/
 .messages/
 .vercel
 .env*.local
+.env.vercel
+.env.vercel-check

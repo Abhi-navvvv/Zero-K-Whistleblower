@@ -9,7 +9,7 @@ type VoteOption = "APPROVE" | "REJECT" | "ESCALATE" | "ABSTAIN";
 
 interface ConsensusRequest {
   id: string;
-  onChainReportId: number | null;
+  onChainReportId: string | number | null;
   reporterThreadId: string | null;
   selectedAdmins: string[];
   status: string;
@@ -44,12 +44,12 @@ const VOTE_STYLES: Record<VoteOption, string> = {
   ABSTAIN: "bg-white/5 border-white/20 text-slate-400 hover:bg-white/10",
 };
 
-// ─── Step 1: Create Consensus Request ──────────────────────────────────────
+// ─── Step 1: Create / Open Consensus Request ────────────────────────────────
 
 function CreateRequestPanel({
-  onCreated,
+  onOpened,
 }: {
-  onCreated: (req: ConsensusRequest) => void;
+  onOpened: (req: ConsensusRequest, created: boolean) => void;
 }) {
   const [reportId, setReportId] = useState("");
   const [threadId, setThreadId] = useState("");
@@ -59,6 +59,10 @@ function CreateRequestPanel({
 
   const handleCreate = useCallback(async () => {
     setError("");
+    if (!reportId.trim()) {
+      setError("Report ID is required.");
+      return;
+    }
     setPending(true);
     try {
       const selectedAdmins = adminAddrs
@@ -66,8 +70,10 @@ function CreateRequestPanel({
         .map((a) => a.trim())
         .filter(Boolean);
 
-      const body: Record<string, unknown> = { selectedAdmins };
-      if (reportId.trim()) body.onChainReportId = Number(reportId.trim());
+      const body: Record<string, unknown> = {
+        selectedAdmins,
+        onChainReportId: Number(reportId.trim()),
+      };
       if (threadId.trim()) body.reporterThreadId = threadId.trim();
 
       const res = await fetch("/api/consensus/request", {
@@ -77,46 +83,45 @@ function CreateRequestPanel({
       });
       const data = await res.json();
       if (!res.ok || !data.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
-      onCreated(data.data as ConsensusRequest);
+      onOpened(data.data as ConsensusRequest, data.created as boolean);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setPending(false);
     }
-  }, [reportId, threadId, adminAddrs, onCreated]);
+  }, [reportId, threadId, adminAddrs, onOpened]);
 
   return (
     <section className="card space-y-5">
       <div className="flex justify-between items-start mb-2">
         <div>
           <p className="step-label">01_INITIATE</p>
-          <h2 className="section-heading">Create Consensus Request</h2>
+          <h2 className="section-heading">Open Consensus Round</h2>
         </div>
         <Icon name="how_to_vote" className="text-white/20 text-2xl" />
       </div>
       <p className="text-xs text-slate-500 font-mono">
-        Open a multi-admin consensus round for a specific on-chain report.
-        Selected admins will be prompted to vote before an aggregated decision
-        is anchored on-chain.
+        Enter a report ID to open a consensus round. If an active round already exists for that
+        report, it will be returned instead of creating a duplicate.
       </p>
 
       <div className="grid gap-4 md:grid-cols-2">
         <div className="space-y-2">
-          <label className="label">On-Chain Report ID</label>
+          <label className="label">On-Chain Report ID <span className="text-red-400">*</span></label>
           <input
             id="consensus-report-id"
             className="input font-mono text-xs"
-            placeholder="e.g. 42"
+            placeholder="e.g. 11"
             value={reportId}
             onChange={(e) => setReportId(e.target.value)}
           />
         </div>
         <div className="space-y-2">
-          <label className="label">Reporter Thread ID (optional)</label>
+          <label className="label">Reporter Thread ID <span className="text-slate-600 font-normal normal-case">(optional)</span></label>
           <input
             id="consensus-thread-id"
             className="input font-mono text-xs"
-            placeholder="Messaging thread nullifier hash"
+            placeholder="Nullifier hash from report card"
             value={threadId}
             onChange={(e) => setThreadId(e.target.value)}
           />
@@ -133,7 +138,7 @@ function CreateRequestPanel({
         <textarea
           id="consensus-admins"
           className="w-full border border-white/20 bg-white/5 focus:bg-white/10 focus:border-white focus:outline-none px-3 py-2 font-mono text-xs text-white placeholder-slate-500 transition-colors resize-none"
-          rows={4}
+          rows={3}
           placeholder={"0xABC…\n0xDEF…"}
           value={adminAddrs}
           onChange={(e) => setAdminAddrs(e.target.value)}
@@ -147,9 +152,9 @@ function CreateRequestPanel({
         id="consensus-create-btn"
         className="btn-primary"
         onClick={handleCreate}
-        disabled={pending}
+        disabled={pending || !reportId.trim()}
       >
-        {pending ? "Creating…" : "Open Consensus Round"}
+        {pending ? "Opening…" : "Open Consensus Round"}
       </button>
 
       {error && (
@@ -158,6 +163,74 @@ function CreateRequestPanel({
         </p>
       )}
     </section>
+  );
+}
+
+// ─── Lookup by Report ID ────────────────────────────────────────────────────
+
+function LookupPanel({
+  onLoaded,
+}: {
+  onLoaded: (req: ConsensusRequest) => void;
+}) {
+  const [reportId, setReportId] = useState("");
+  const [pending, setPending] = useState(false);
+  const [notFound, setNotFound] = useState(false);
+  const [error, setError] = useState("");
+
+  const handleLookup = useCallback(async () => {
+    if (!reportId.trim() || isNaN(Number(reportId))) return;
+    setError("");
+    setNotFound(false);
+    setPending(true);
+    try {
+      const res = await fetch(`/api/consensus/request?reportId=${reportId.trim()}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+      if (!data.found) {
+        setNotFound(true);
+      } else {
+        onLoaded(data.data as ConsensusRequest);
+      }
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPending(false);
+    }
+  }, [reportId, onLoaded]);
+
+  return (
+    <div className="space-y-3">
+      <div className="flex gap-3 items-end">
+        <div className="flex-1 space-y-2">
+          <label className="label">Join by Report ID</label>
+          <input
+            id="lookup-report-id"
+            className="input font-mono text-xs"
+            placeholder="e.g. 11"
+            value={reportId}
+            onChange={(e) => { setReportId(e.target.value); setNotFound(false); setError(""); }}
+            onKeyDown={(e) => e.key === "Enter" && handleLookup()}
+          />
+        </div>
+        <button
+          id="lookup-btn"
+          className="btn-ghost shrink-0"
+          onClick={handleLookup}
+          disabled={!reportId.trim() || pending}
+        >
+          {pending ? "Searching…" : "Join Round"}
+        </button>
+      </div>
+      {notFound && (
+        <p className="text-[10px] font-mono text-yellow-400">
+          ⚠ No active consensus round found for Report #{reportId}. Ask the admin who created it to share the report ID, or create a new round above.
+        </p>
+      )}
+      {error && (
+        <p className="text-[10px] font-mono text-red-400">{error}</p>
+      )}
+    </div>
   );
 }
 
@@ -179,7 +252,6 @@ function CastVotePanel({ requestId }: { requestId: string }) {
     setSuccess("");
     setPending(true);
     try {
-      // Sign the vote commitment for audit trail
       const message = `ZK-Whistleblower consensus vote\nRequest: ${requestId}\nVote: ${vote}\nVoter: ${address}`;
       let signature: string | undefined;
       try {
@@ -224,7 +296,7 @@ function CastVotePanel({ requestId }: { requestId: string }) {
       <div className="bg-white/5 border border-white/10 p-3 font-mono text-xs text-slate-400 space-y-1">
         <p>
           <span className="text-slate-500">REQUEST_ID: </span>
-          {requestId}
+          <span className="break-all">{requestId}</span>
         </p>
         <p>
           <span className="text-slate-500">VOTER: </span>
@@ -252,8 +324,7 @@ function CastVotePanel({ requestId }: { requestId: string }) {
 
       <div className="space-y-2">
         <label className="label">
-          Reason{" "}
-          <span className="text-slate-600 font-normal normal-case">(optional)</span>
+          Reason <span className="text-slate-600 font-normal normal-case">(optional)</span>
         </label>
         <textarea
           id="vote-reason"
@@ -278,9 +349,7 @@ function CastVotePanel({ requestId }: { requestId: string }) {
           : "Submit Vote"}
       </button>
 
-      {success && (
-        <p className="text-[10px] font-mono text-green-400">{success}</p>
-      )}
+      {success && <p className="text-[10px] font-mono text-green-400">{success}</p>}
       {error && (
         <p className="bg-red-900/30 border border-red-500/30 p-3 text-xs text-red-400 font-mono">
           {error}
@@ -310,22 +379,16 @@ function AggregatePanel({ requestId }: { requestId: string }) {
       const res = await fetch("/api/consensus/aggregate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          consensusRequestId: requestId,
-          chainId: Number(chainId),
-        }),
+        body: JSON.stringify({ consensusRequestId: requestId, chainId: Number(chainId) }),
       });
       const data = await res.json();
       if (!res.ok || !data.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
 
       if (data.message === "No decisive result yet") {
         setNoDecision(true);
-        // Extract vote counts from request if available
         const votes = data.data?.request?.votes ?? [];
         const counts: VoteTally = { APPROVE: 0, REJECT: 0, ESCALATE: 0, ABSTAIN: 0 };
-        for (const v of votes) {
-          counts[v.vote as VoteOption] = (counts[v.vote as VoteOption] ?? 0) + 1;
-        }
+        for (const v of votes) counts[v.vote as VoteOption] = (counts[v.vote as VoteOption] ?? 0) + 1;
         setTally(counts);
       } else {
         setResult(data.data as AggregateResult);
@@ -347,8 +410,7 @@ function AggregatePanel({ requestId }: { requestId: string }) {
         <Icon name="lock" className="text-white/20 text-2xl" />
       </div>
       <p className="text-xs text-slate-500 font-mono">
-        Once a majority is reached, compute the keccak256 commitment for the
-        decision. This hash can be signed by all admins and anchored on-chain.
+        Once a majority is reached, compute the keccak256 commitment and anchor the decision on-chain.
       </p>
 
       <div className="space-y-2">
@@ -362,25 +424,16 @@ function AggregatePanel({ requestId }: { requestId: string }) {
         />
       </div>
 
-      <button
-        id="aggregate-btn"
-        className="btn-ghost"
-        onClick={handleAggregate}
-        disabled={pending}
-      >
+      <button id="aggregate-btn" className="btn-ghost" onClick={handleAggregate} disabled={pending}>
         {pending ? "Computing…" : "Compute Consensus Result"}
       </button>
 
-      {/* Current tally */}
       {tally && (
         <div className="space-y-3">
           <p className="label">Current Vote Tally</p>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             {(Object.entries(tally) as [VoteOption, number][]).map(([v, count]) => (
-              <div
-                key={v}
-                className={`border p-3 text-center ${VOTE_STYLES[v]}`}
-              >
+              <div key={v} className={`border p-3 text-center ${VOTE_STYLES[v]}`}>
                 <p className="text-xl font-black">{count}</p>
                 <p className="text-[10px] uppercase tracking-widest mt-1">{v}</p>
               </div>
@@ -395,49 +448,30 @@ function AggregatePanel({ requestId }: { requestId: string }) {
         </div>
       )}
 
-      {/* Commitment result */}
       {result && (
-        <div className="space-y-3">
-          <div className="bg-green-900/20 border border-green-500/30 p-4 space-y-3">
-            <div className="flex items-center gap-3">
-              <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500">
-                Decision
-              </span>
-              <span
-                className={`text-sm font-black uppercase ${
-                  DECISION_LABELS[result.decision]?.color ?? "text-white"
-                }`}
-              >
-                {DECISION_LABELS[result.decision]?.label ?? `Code ${result.decision}`}
-              </span>
-            </div>
-            <div className="space-y-1 font-mono text-xs text-slate-400">
-              <p>
-                <span className="text-slate-500">REPORT_ID: </span>
-                {result.reportId}
-              </p>
-              <p>
-                <span className="text-slate-500">CHAIN: </span>
-                {result.chain}
-              </p>
-              <p>
-                <span className="text-slate-500">TIMESTAMP: </span>
-                {new Date(result.timestamp * 1000).toLocaleString()}
-              </p>
-            </div>
-            <div>
-              <p className="text-[10px] font-mono text-slate-500 uppercase tracking-widest mb-1">
-                Commitment Hash (keccak256)
-              </p>
-              <p className="break-all font-mono text-xs text-green-300 bg-black/30 p-2 border border-green-500/20">
-                {result.commitment}
-              </p>
-              <p className="mt-2 text-[10px] font-mono text-slate-600">
-                ↳ Have each selected admin sign this commitment with their wallet,
-                then submit the aggregated signatures to the{" "}
-                <code className="text-slate-400">WhistleblowerRegistry</code> contract.
-              </p>
-            </div>
+        <div className="bg-green-900/20 border border-green-500/30 p-4 space-y-3">
+          <div className="flex items-center gap-3">
+            <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Decision</span>
+            <span className={`text-sm font-black uppercase ${DECISION_LABELS[result.decision]?.color ?? "text-white"}`}>
+              {DECISION_LABELS[result.decision]?.label ?? `Code ${result.decision}`}
+            </span>
+          </div>
+          <div className="space-y-1 font-mono text-xs text-slate-400">
+            <p><span className="text-slate-500">REPORT_ID: </span>{result.reportId}</p>
+            <p><span className="text-slate-500">CHAIN: </span>{result.chain}</p>
+            <p><span className="text-slate-500">TIMESTAMP: </span>{new Date(result.timestamp * 1000).toLocaleString()}</p>
+          </div>
+          <div>
+            <p className="text-[10px] font-mono text-slate-500 uppercase tracking-widest mb-1">
+              Commitment Hash (keccak256)
+            </p>
+            <p className="break-all font-mono text-xs text-green-300 bg-black/30 p-2 border border-green-500/20">
+              {result.commitment}
+            </p>
+            <p className="mt-2 text-[10px] font-mono text-slate-600">
+              ↳ Have each selected admin sign this commitment with their wallet, then submit the aggregated signatures to the{" "}
+              <code className="text-slate-400">WhistleblowerRegistry</code> contract.
+            </p>
           </div>
         </div>
       )}
@@ -451,47 +485,20 @@ function AggregatePanel({ requestId }: { requestId: string }) {
   );
 }
 
-// ─── Load Existing Request ──────────────────────────────────────────────────
-
-function LoadRequestPanel({
-  onLoaded,
-}: {
-  onLoaded: (id: string) => void;
-}) {
-  const [value, setValue] = useState("");
-  return (
-    <div className="flex gap-3 items-end">
-      <div className="flex-1 space-y-2">
-        <label className="label">
-          Resume Existing Request ID
-        </label>
-        <input
-          id="load-request-id"
-          className="input font-mono text-xs"
-          placeholder="Paste consensus request UUID…"
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-        />
-      </div>
-      <button
-        id="load-request-btn"
-        className="btn-ghost shrink-0"
-        onClick={() => value.trim() && onLoaded(value.trim())}
-        disabled={!value.trim()}
-      >
-        Load
-      </button>
-    </div>
-  );
-}
-
 // ─── Main Page ──────────────────────────────────────────────────────────────
 
 export default function ConsensusPage() {
-  const [activeRequestId, setActiveRequestId] = useState<string | null>(null);
+  const [activeRequest, setActiveRequest] = useState<ConsensusRequest | null>(null);
+  const [wasExisting, setWasExisting] = useState(false);
 
-  const handleCreated = useCallback((req: ConsensusRequest) => {
-    setActiveRequestId(req.id);
+  const handleOpened = useCallback((req: ConsensusRequest, created: boolean) => {
+    setActiveRequest(req);
+    setWasExisting(!created);
+  }, []);
+
+  const handleLoaded = useCallback((req: ConsensusRequest) => {
+    setActiveRequest(req);
+    setWasExisting(true);
   }, []);
 
   return (
@@ -512,54 +519,62 @@ export default function ConsensusPage() {
           </div>
         </div>
 
-        {/* Step 1 */}
-        <CreateRequestPanel onCreated={handleCreated} />
+        {/* Step 1 — Create or reopen */}
+        <CreateRequestPanel onOpened={handleOpened} />
 
-        {/* Resume existing */}
+        {/* Join by Report ID */}
         <section className="card space-y-4">
           <div className="flex justify-between items-start mb-2">
             <div>
-              <p className="step-label">OR_RESUME</p>
-              <h2 className="section-heading">Resume Existing Round</h2>
+              <p className="step-label">OR_JOIN</p>
+              <h2 className="section-heading">Join Existing Round</h2>
             </div>
             <Icon name="restart_alt" className="text-white/20 text-2xl" />
           </div>
-          <LoadRequestPanel onLoaded={setActiveRequestId} />
+          <p className="text-xs text-slate-500 font-mono">
+            If another admin already opened a round, enter the report ID to join it directly.
+          </p>
+          <LookupPanel onLoaded={handleLoaded} />
         </section>
 
-        {/* Active request steps */}
-        {activeRequestId && (
+        {/* Active request */}
+        {activeRequest && (
           <>
-            {/* Active request banner */}
-            <div className="bg-purple-500/10 border border-purple-500/30 p-4 flex items-center justify-between">
-              <div className="space-y-1">
-                <p className="text-[10px] font-mono text-purple-400 uppercase tracking-widest">
-                  Active Consensus Round
+            {/* Banner */}
+            <div className={`border p-4 flex items-start justify-between gap-4 ${
+              wasExisting
+                ? "bg-blue-500/10 border-blue-500/30"
+                : "bg-purple-500/10 border-purple-500/30"
+            }`}>
+              <div className="space-y-1 min-w-0">
+                <p className={`text-[10px] font-mono uppercase tracking-widest ${wasExisting ? "text-blue-400" : "text-purple-400"}`}>
+                  {wasExisting ? "Joined Existing Round" : "New Round Created"}
+                  {activeRequest.onChainReportId !== null && ` — Report #${activeRequest.onChainReportId}`}
                 </p>
-                <p className="font-mono text-xs text-white break-all">
-                  {activeRequestId}
-                </p>
+                <p className="font-mono text-xs text-white break-all">{activeRequest.id}</p>
+                {activeRequest.selectedAdmins.length > 0 && (
+                  <p className="text-[10px] font-mono text-slate-500">
+                    {activeRequest.selectedAdmins.length} admin(s) assigned to vote
+                  </p>
+                )}
               </div>
               <button
-                className="text-slate-500 hover:text-white text-sm ml-4 shrink-0"
-                onClick={() => setActiveRequestId(null)}
-                title="Close this round"
+                className="text-slate-500 hover:text-white text-sm shrink-0"
+                onClick={() => setActiveRequest(null)}
+                title="Close"
               >
                 ✕
               </button>
             </div>
 
-            {/* Step 2 */}
-            <CastVotePanel requestId={activeRequestId} />
-
-            {/* Step 3 */}
-            <AggregatePanel requestId={activeRequestId} />
+            <CastVotePanel requestId={activeRequest.id} />
+            <AggregatePanel requestId={activeRequest.id} />
           </>
         )}
 
-        {!activeRequestId && (
+        {!activeRequest && (
           <p className="text-center text-[10px] font-mono text-slate-600 uppercase tracking-widest">
-            Create or load a consensus round above to begin voting.
+            Open or join a consensus round above to begin voting.
           </p>
         )}
       </div>

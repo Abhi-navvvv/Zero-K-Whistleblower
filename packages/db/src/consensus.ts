@@ -24,6 +24,32 @@ export async function createConsensusRequest(input: CreateConsensusInput) {
     return row;
 }
 
+/** Find the active (PENDING_REVIEW) consensus request for a given on-chain report ID, if any. */
+export async function findActiveConsensusForReport(onChainReportId: number | bigint) {
+    const p = prisma as any;
+    return p.reportConsensusRequest.findFirst({
+        where: {
+            onChainReportId: BigInt(onChainReportId as any),
+            status: "PENDING_REVIEW",
+        },
+        include: { votes: true },
+        orderBy: { createdAt: "desc" },
+    });
+}
+
+/**
+ * Upsert: if an active consensus already exists for this report, return it.
+ * Otherwise create a new one.
+ */
+export async function upsertConsensusRequest(input: CreateConsensusInput) {
+    if (input.onChainReportId !== undefined && input.onChainReportId !== null) {
+        const existing = await findActiveConsensusForReport(input.onChainReportId);
+        if (existing) return { row: existing, created: false };
+    }
+    const row = await createConsensusRequest(input);
+    return { row, created: true };
+}
+
 export async function addAdminVote(consensusRequestId: string, adminAddress: string, vote: "APPROVE" | "REJECT" | "ESCALATE" | "ABSTAIN", signature?: string, reason?: string, encryptedReason?: string) {
     const p = prisma as any;
     const row = await p.adminConsensusVote.create({
