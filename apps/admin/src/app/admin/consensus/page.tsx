@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, useCallback } from "react";
-import { Icon, AdminGate, useAccount, useSignMessage } from "@zk-whistleblower/ui";
+import { useState, useCallback, useEffect } from "react";
+import { Icon, AdminGate, useAccount, useSignMessage, useOrg } from "@zk-whistleblower/ui";
+import { getLeagues, getLeagueMembers } from "@zk-whistleblower/shared/src/leagueStore";
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -51,11 +52,27 @@ function CreateRequestPanel({
 }: {
   onOpened: (req: ConsensusRequest, created: boolean) => void;
 }) {
+  const { selectedOrgId } = useOrg();
   const [reportId, setReportId] = useState("");
   const [threadId, setThreadId] = useState("");
   const [adminAddrs, setAdminAddrs] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
+
+  // Pre-fill the admins text area with active admins who can review reports
+  useEffect(() => {
+    const leagues = getLeagues(selectedOrgId);
+    const validLeagueIds = new Set(
+      leagues.filter(l => l.permissions?.canReviewReports).map(l => l.id)
+    );
+    const members = getLeagueMembers(selectedOrgId);
+    const validAdmins = members
+      .filter(m => validLeagueIds.has(m.leagueId))
+      .map(m => m.address);
+    if (validAdmins.length > 0) {
+      setAdminAddrs(validAdmins.join("\n"));
+    }
+  }, [selectedOrgId]);
 
   const handleCreate = useCallback(async () => {
     setError("");

@@ -52,7 +52,27 @@ export async function upsertConsensusRequest(input: CreateConsensusInput) {
 
 export async function addAdminVote(consensusRequestId: string, adminAddress: string, vote: "APPROVE" | "REJECT" | "ESCALATE" | "ABSTAIN", signature?: string, reason?: string, encryptedReason?: string) {
     const p = prisma as any;
-    const row = await p.adminConsensusVote.create({
+    
+    // Check if the admin has already voted
+    const existing = await p.adminConsensusVote.findFirst({
+        where: { consensusRequestId, adminAddress }
+    });
+    
+    if (existing) {
+        // Update their existing vote
+        return p.adminConsensusVote.update({
+            where: { id: existing.id },
+            data: {
+                vote,
+                signature: signature ?? null,
+                reason: reason ?? null,
+                encryptedReason: encryptedReason ?? null,
+                votedAt: new Date()
+            }
+        });
+    }
+
+    return p.adminConsensusVote.create({
         data: {
             consensusRequestId,
             adminAddress,
@@ -62,7 +82,6 @@ export async function addAdminVote(consensusRequestId: string, adminAddress: str
             encryptedReason: encryptedReason ?? null,
         },
     });
-    return row;
 }
 
 export async function computeConsensusResult(consensusRequestId: string) {
