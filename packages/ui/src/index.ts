@@ -8,6 +8,7 @@ export {
   useAccount,
   usePublicClient,
   useReadContract,
+  useSignMessage,
   useWaitForTransactionReceipt,
   useWatchContractEvent,
 } from "wagmi";
