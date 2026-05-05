@@ -4,7 +4,7 @@ import path from "path";
 const nextConfig: NextConfig = {
   outputFileTracingRoot: path.join(__dirname, "../.."),
   outputFileTracingIncludes: {
-    "/api/**": ["./src/generated/client/*"],
+    "/api/**": ["../../packages/db/src/generated/client/**/*"],
   },
   experimental: {
     optimizePackageImports: [
