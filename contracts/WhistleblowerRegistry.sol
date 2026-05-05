@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 
 interface IGroth16Verifier {
     function verifyProof(
@@ -15,6 +16,7 @@ interface IGroth16Verifier {
 
 contract WhistleblowerRegistry is AccessControl {
     using ECDSA for bytes32;
+    using MessageHashUtils for bytes32;
     uint256 public constant DEFAULT_ORG_ID = 0;
     bytes32 public constant SUPER_ADMIN_ROLE = DEFAULT_ADMIN_ROLE;
 
@@ -461,11 +463,11 @@ contract WhistleblowerRegistry is AccessControl {
         ConsensusStatus status = ConsensusStatus.PENDING_REVIEW;
         if (assigned == 0) {
             status = ConsensusStatus.PENDING_REVIEW;
-        } else if (approves * 2 > assigned) {
+        } else if (approves * 3 > assigned * 2) {
             status = ConsensusStatus.APPROVED;
-        } else if (rejects * 2 > assigned) {
+        } else if (rejects * 3 > assigned * 2) {
             status = ConsensusStatus.REJECTED;
-        } else if (escalates > 0) {
+        } else if (escalates * 3 > assigned * 2) {
             status = ConsensusStatus.ESCALATED;
         }
 
@@ -486,6 +488,7 @@ contract WhistleblowerRegistry is AccessControl {
     ) external {
         if (_reportId >= reports.length) revert ReportDoesNotExist();
         if (_signers.length != _signatures.length) revert();
+        if (reportConsensusStatus[_reportId] != ConsensusStatus.PENDING_REVIEW) revert();
 
         uint256 orgId = reportOrgId[_reportId];
         if (!organizationExists[orgId]) revert OrganizationDoesNotExist();
@@ -505,7 +508,7 @@ contract WhistleblowerRegistry is AccessControl {
             address signer = _signers[i];
             bytes memory sig = _signatures[i];
             // recover signer from signature over the eth-signed commitment
-            bytes32 ethHash = ECDSA.toEthSignedMessageHash(_commitment);
+            bytes32 ethHash = _commitment.toEthSignedMessageHash();
             address recovered = ECDSA.recover(ethHash, sig);
             if (recovered != signer) continue;
             if (!reportAdminAssigned[_reportId][signer]) continue;
@@ -524,8 +527,8 @@ contract WhistleblowerRegistry is AccessControl {
             valid++;
         }
 
-        // require majority of assigned admins to have signed
-        if (valid * 2 <= assigned) revert();
+        // require supermajority of assigned admins to have signed
+        if (valid * 3 <= assigned * 2) revert();
 
         // map decision to status
         ConsensusStatus status;

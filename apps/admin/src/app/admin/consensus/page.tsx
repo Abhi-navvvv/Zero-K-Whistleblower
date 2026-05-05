@@ -3,6 +3,7 @@
 import { useState, useCallback, useEffect } from "react";
 import { Icon, AdminGate, useAccount, useSignMessage, useOrg } from "@zk-whistleblower/ui";
 import { getLeagues, getLeagueMembers } from "@zk-whistleblower/shared/src/leagueStore";
+import { buildConsensusRequestMessage, buildConsensusVoteMessage, normalizeConsensusAdmins } from "@zk-whistleblower/shared/src/consensus";
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -52,6 +53,8 @@ function CreateRequestPanel({
 }: {
   onOpened: (req: ConsensusRequest, created: boolean) => void;
 }) {
+  const { address } = useAccount();
+  const { signMessageAsync } = useSignMessage();
   const { selectedOrgId } = useOrg();
   const [reportId, setReportId] = useState("");
   const [threadId, setThreadId] = useState("");
@@ -82,14 +85,39 @@ function CreateRequestPanel({
     }
     setPending(true);
     try {
-      const selectedAdmins = adminAddrs
-        .split(/[\n,]+/)
-        .map((a) => a.trim())
-        .filter(Boolean);
+      if (!address) {
+        setError("Connect a wallet to open a consensus round.");
+        return;
+      }
+
+      const selectedAdmins = normalizeConsensusAdmins(
+        adminAddrs
+          .split(/[\n,]+/)
+          .map((a) => a.trim())
+          .filter(Boolean)
+      );
+
+      if (selectedAdmins.length === 0) {
+        setError("At least one selected admin is required.");
+        return;
+      }
+
+      const creatorAddress = address.toLowerCase();
+      const message = buildConsensusRequestMessage({
+        orgId: selectedOrgId,
+        reportId: Number(reportId.trim()),
+        reporterThreadId: threadId.trim() || null,
+        selectedAdmins,
+        creatorAddress,
+      });
+      const signature = await signMessageAsync({ message });
 
       const body: Record<string, unknown> = {
         selectedAdmins,
         onChainReportId: Number(reportId.trim()),
+        orgId: selectedOrgId,
+        creatorAddress,
+        signature,
       };
       if (threadId.trim()) body.reporterThreadId = threadId.trim();
 
@@ -106,7 +134,7 @@ function CreateRequestPanel({
     } finally {
       setPending(false);
     }
-  }, [reportId, threadId, adminAddrs, onOpened]);
+  }, [reportId, threadId, adminAddrs, onOpened, address, signMessageAsync, selectedOrgId]);
 
   return (
     <section className="card space-y-5">
@@ -161,7 +189,7 @@ function CreateRequestPanel({
           onChange={(e) => setAdminAddrs(e.target.value)}
         />
         <p className="text-[10px] font-mono text-slate-600">
-          Leave empty to allow any connected admin to vote.
+          The selected committee is fixed for the round and must contain at least one admin.
         </p>
       </div>
 
@@ -269,20 +297,20 @@ function CastVotePanel({ requestId }: { requestId: string }) {
     setSuccess("");
     setPending(true);
     try {
-      const message = `ZK-Whistleblower consensus vote\nRequest: ${requestId}\nVote: ${vote}\nVoter: ${address}`;
-      let signature: string | undefined;
-      try {
-        signature = await signMessageAsync({ message });
-      } catch {
-        // wallet may reject signing — proceed without signature
-      }
+      const normalizedAddress = address.toLowerCase();
+      const message = buildConsensusVoteMessage({
+        consensusRequestId: requestId,
+        vote,
+        adminAddress: normalizedAddress,
+      });
+      const signature = await signMessageAsync({ message });
 
       const res = await fetch("/api/consensus/vote", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           consensusRequestId: requestId,
-          adminAddress: address,
+          adminAddress: normalizedAddress,
           vote,
           signature,
           reason: reason.trim() || undefined,
@@ -328,9 +356,8 @@ function CastVotePanel({ requestId }: { requestId: string }) {
             <button
               key={v}
               id={`vote-${v.toLowerCase()}`}
-              className={`border px-3 py-3 text-xs font-bold uppercase tracking-widest transition-all ${
-                VOTE_STYLES[v]
-              } ${vote === v ? "ring-2 ring-white/30" : ""}`}
+              className={`border px-3 py-3 text-xs font-bold uppercase tracking-widest transition-all ${VOTE_STYLES[v]
+                } ${vote === v ? "ring-2 ring-white/30" : ""}`}
               onClick={() => setVote(v)}
             >
               {v}
@@ -362,8 +389,8 @@ function CastVotePanel({ requestId }: { requestId: string }) {
         {!address
           ? "Connect Wallet to Vote"
           : pending
-          ? "Signing & Submitting…"
-          : "Submit Vote"}
+            ? "Signing & Submitting…"
+            : "Submit Vote"}
       </button>
 
       {success && <p className="text-[10px] font-mono text-green-400">{success}</p>}
@@ -410,7 +437,7 @@ function VoteTallyDisplay({ tally }: { tally: TallyInfo }) {
         </div>
         <div className="bg-white/5 border border-white/10 p-3 text-center">
           <p className="text-2xl font-black text-purple-400">{needsToWin}</p>
-          <p className="text-[10px] font-mono text-slate-500 uppercase tracking-widest mt-1">For Majority</p>
+          <p className="text-[10px] font-mono text-slate-500 uppercase tracking-widest mt-1">For Supermajority</p>
         </div>
       </div>
 
@@ -422,9 +449,8 @@ function VoteTallyDisplay({ tally }: { tally: TallyInfo }) {
           return (
             <div key={v} className="space-y-1">
               <div className="flex justify-between items-center">
-                <span className={`text-[10px] font-bold uppercase tracking-widest ${
-                  reachedMajority ? "text-white" : "text-slate-500"
-                }`}>
+                <span className={`text-[10px] font-bold uppercase tracking-widest ${reachedMajority ? "text-white" : "text-slate-500"
+                  }`}>
                   {v} {reachedMajority && "✓ MAJORITY"}
                 </span>
                 <span className="text-[10px] font-mono text-slate-400">
@@ -433,11 +459,10 @@ function VoteTallyDisplay({ tally }: { tally: TallyInfo }) {
               </div>
               <div className="h-2 bg-white/5 border border-white/10 overflow-hidden">
                 <div
-                  className={`h-full transition-all duration-500 ${
-                    v === "APPROVE" ? "bg-green-500" :
-                    v === "REJECT" ? "bg-red-500" :
-                    v === "ESCALATE" ? "bg-yellow-500" : "bg-slate-500"
-                  } ${reachedMajority ? "opacity-100" : "opacity-50"}`}
+                  className={`h-full transition-all duration-500 ${v === "APPROVE" ? "bg-green-500" :
+                      v === "REJECT" ? "bg-red-500" :
+                        v === "ESCALATE" ? "bg-yellow-500" : "bg-slate-500"
+                    } ${reachedMajority ? "opacity-100" : "opacity-50"}`}
                   style={{ width: `${pct}%` }}
                 />
               </div>
@@ -448,16 +473,15 @@ function VoteTallyDisplay({ tally }: { tally: TallyInfo }) {
 
       {/* Status message */}
       {assigned > 0 && (
-        <div className={`p-3 text-xs font-mono border ${
-          leading[1] >= needsToWin
+        <div className={`p-3 text-xs font-mono border ${leading[1] >= needsToWin
             ? "bg-green-900/20 border-green-500/30 text-green-400"
             : votesNeeded === 1
-            ? "bg-yellow-900/20 border-yellow-500/30 text-yellow-400"
-            : "bg-white/5 border-white/10 text-slate-400"
-        }`}>
+              ? "bg-yellow-900/20 border-yellow-500/30 text-yellow-400"
+              : "bg-white/5 border-white/10 text-slate-400"
+          }`}>
           {leading[1] >= needsToWin
-            ? `✓ ${leading[0]} has reached majority (${leading[1]}/${assigned} votes). Ready to anchor.`
-            : `${voted}/${assigned} admin${voted !== 1 ? "s" : ""} voted · ${leading[0]} leads with ${leading[1]} vote${leading[1] !== 1 ? "s" : ""} · need ${votesNeeded} more for majority`
+            ? `✓ ${leading[0]} has reached supermajority (${leading[1]}/${assigned} votes). Ready to anchor.`
+            : `${voted}/${assigned} admin${voted !== 1 ? "s" : ""} voted · ${leading[0]} leads with ${leading[1]} vote${leading[1] !== 1 ? "s" : ""} · need ${votesNeeded} more for supermajority`
           }
         </div>
       )}
@@ -623,11 +647,10 @@ export default function ConsensusPage() {
         {activeRequest && (
           <>
             {/* Banner */}
-            <div className={`border p-4 flex items-start justify-between gap-4 ${
-              wasExisting
+            <div className={`border p-4 flex items-start justify-between gap-4 ${wasExisting
                 ? "bg-blue-500/10 border-blue-500/30"
                 : "bg-purple-500/10 border-purple-500/30"
-            }`}>
+              }`}>
               <div className="space-y-1 min-w-0">
                 <p className={`text-[10px] font-mono uppercase tracking-widest ${wasExisting ? "text-blue-400" : "text-purple-400"}`}>
                   {wasExisting ? "Joined Existing Round" : "New Round Created"}
