@@ -473,12 +473,17 @@ contract WhistleblowerRegistry is AccessControl {
             revert InsufficientByzantineQuorum();
         }
 
-        // clear previous assignments
+        // clear previous assignments and reset votes/counts
         address[] storage prev = reportAssignedAdmins[_reportId];
         for (uint256 i = 0; i < prev.length; i++) {
-            reportAdminAssigned[_reportId][prev[i]] = false;
+            address prevAdmin = prev[i];
+            reportAdminAssigned[_reportId][prevAdmin] = false;
+            adminVotes[_reportId][prevAdmin] = 0;
         }
         delete reportAssignedAdmins[_reportId];
+        reportApproveCount[_reportId] = 0;
+        reportRejectCount[_reportId] = 0;
+        reportEscalateCount[_reportId] = 0;
 
         for (uint256 i = 0; i < _admins.length; i++) {
             address a = _admins[i];
@@ -511,7 +516,8 @@ contract WhistleblowerRegistry is AccessControl {
         // PBFT DEFENSE: Enforce voting deadline to prevent delayed attacks
         if (block.timestamp > reportVotingDeadline[_reportId]) {
             reportConsensusStatus[_reportId] = ConsensusStatus.TIMEOUT;
-            revert();
+            emit ReportConsensusFinalized(_reportId, ConsensusStatus.TIMEOUT, block.timestamp);
+            return;
         }
 
         adminVotes[_reportId][msg.sender] = _vote;
@@ -536,6 +542,11 @@ contract WhistleblowerRegistry is AccessControl {
         }
 
         uint256 assigned = reportAssignedAdmins[_reportId].length;
+        if (assigned == 0) {
+            // no assigned admins — keep pending
+            reportConsensusStatus[_reportId] = ConsensusStatus.PENDING_REVIEW;
+            return;
+        }
         uint256 approves = reportApproveCount[_reportId];
         uint256 rejects = reportRejectCount[_reportId];
         uint256 escalates = reportEscalateCount[_reportId];
