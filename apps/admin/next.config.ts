@@ -3,13 +3,13 @@ import path from "path";
 
 const nextConfig: NextConfig = {
   outputFileTracingRoot: path.join(__dirname, "../.."),
+  outputFileTracingIncludes: {
+    "/api/**/*": ["./node_modules/.prisma/client/**/*", "../../node_modules/.prisma/client/**/*"],
+  },
   experimental: {
     optimizePackageImports: [
       "@zk-whistleblower/shared",
     ],
-    outputFileTracingIncludes: {
-      "/api/**/*": ["./node_modules/.prisma/client/**/*", "../../node_modules/.prisma/client/**/*"],
-    },
   },
   turbopack: {
     resolveAlias: {
