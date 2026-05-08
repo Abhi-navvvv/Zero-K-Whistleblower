@@ -3,6 +3,9 @@ import path from "path";
 
 const nextConfig: NextConfig = {
   outputFileTracingRoot: path.join(__dirname, "../.."),
+  outputFileTracingIncludes: {
+    "/api/**": ["./src/generated/client/*"],
+  },
   experimental: {
     optimizePackageImports: [
       "@zk-whistleblower/shared",
