@@ -386,13 +386,22 @@ function ReportCard({
                 <Icon name="chat" className="text-sm" />
                 Anonymous Messaging Channel
               </p>
-              <button
-                className="btn-ghost text-[10px] px-3 py-1"
-                onClick={handleArchiveToggle}
-                disabled={!reviewerKey.trim()}
-              >
-                {threadArchived ? "Restore Thread" : "Archive Thread"}
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  className="btn-ghost text-[10px] px-3 py-1"
+                  onClick={() => loadThread(threadId, commKey)}
+                  disabled={threadLoading}
+                >
+                  {threadLoading ? "Refreshing…" : "↻ Refresh"}
+                </button>
+                <button
+                  className="btn-ghost text-[10px] px-3 py-1"
+                  onClick={handleArchiveToggle}
+                  disabled={!reviewerKey.trim()}
+                >
+                  {threadArchived ? "Restore Thread" : "Archive Thread"}
+                </button>
+              </div>
 
               {/* Thread messages */}
               {threadLoading && (
