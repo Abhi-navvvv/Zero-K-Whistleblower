@@ -2,6 +2,7 @@
 pragma solidity ^0.8.28;
 
 import "@openzeppelin/contracts/access/AccessControl.sol";
+import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 
 interface IGroth16Verifier {
     function verifyProof(
@@ -13,6 +14,7 @@ interface IGroth16Verifier {
 }
 
 contract WhistleblowerRegistry is AccessControl {
+    using ECDSA for bytes32;
     uint256 public constant DEFAULT_ORG_ID = 0;
     bytes32 public constant SUPER_ADMIN_ROLE = DEFAULT_ADMIN_ROLE;
 
@@ -99,6 +101,43 @@ contract WhistleblowerRegistry is AccessControl {
     event RootAddedForOrg(uint256 indexed orgId, uint256 indexed root);
     event RootRevoked(uint256 indexed root);
     event RootRevokedForOrg(uint256 indexed orgId, uint256 indexed root);
+
+    enum ConsensusStatus {
+        PENDING_REVIEW,
+        APPROVED,
+        REJECTED,
+        ESCALATED,
+        TIMEOUT
+    }
+
+    mapping(uint256 => address[]) public reportAssignedAdmins;
+    mapping(uint256 => mapping(address => bool)) public reportAdminAssigned;
+
+    mapping(uint256 => mapping(address => uint8)) public adminVotes;
+    mapping(uint256 => uint256) public reportApproveCount;
+    mapping(uint256 => uint256) public reportRejectCount;
+    mapping(uint256 => uint256) public reportEscalateCount;
+    mapping(uint256 => ConsensusStatus) public reportConsensusStatus;
+    mapping(uint256 => bytes32) public reportConsensusCommitment;
+
+    event ReportAssignedToAdmins(
+        uint256 indexed reportId,
+        address[] assignedAdmins,
+        uint256 timestamp
+    );
+
+    event AdminVoted(
+        uint256 indexed reportId,
+        address indexed admin,
+        uint8 vote,
+        uint256 timestamp
+    );
+
+    event ReportConsensusFinalized(
+        uint256 indexed reportId,
+        ConsensusStatus status,
+        uint256 timestamp
+    );
 
     modifier onlyOrgAdmin(uint256 _orgId) {
         if (!isOrgAdmin(_orgId, msg.sender)) {
@@ -354,5 +393,150 @@ contract WhistleblowerRegistry is AccessControl {
         if (!organizationExists[_orgId]) revert OrganizationDoesNotExist();
         if (_index >= orgReportIds[_orgId].length) revert ReportDoesNotExist();
         return orgReportIds[_orgId][_index];
+    }
+
+    function assignReportToAdmins(uint256 _reportId, address[] calldata _admins) external {
+        if (_reportId >= reports.length) revert ReportDoesNotExist();
+        uint256 orgId = reportOrgId[_reportId];
+        if (!isOrgAdmin(orgId, msg.sender)) revert UnauthorizedOrgAdmin(orgId, msg.sender);
+
+        // clear previous assignments
+        address[] storage prev = reportAssignedAdmins[_reportId];
+        for (uint256 i = 0; i < prev.length; i++) {
+            reportAdminAssigned[_reportId][prev[i]] = false;
+        }
+        delete reportAssignedAdmins[_reportId];
+
+        for (uint256 i = 0; i < _admins.length; i++) {
+            address a = _admins[i];
+            if (a == address(0)) continue;
+            if (!reportAdminAssigned[_reportId][a]) {
+                reportAssignedAdmins[_reportId].push(a);
+                reportAdminAssigned[_reportId][a] = true;
+            }
+        }
+
+        reportConsensusStatus[_reportId] = ConsensusStatus.PENDING_REVIEW;
+        emit ReportAssignedToAdmins(_reportId, _admins, block.timestamp);
+    }
+
+    function isAssignedAdmin(uint256 _reportId, address _admin) external view returns (bool) {
+        return reportAdminAssigned[_reportId][_admin];
+    }
+
+    function adminVote(uint256 _reportId, uint8 _vote) external {
+        if (_reportId >= reports.length) revert ReportDoesNotExist();
+        uint256 orgId = reportOrgId[_reportId];
+        if (!isOrgAdmin(orgId, msg.sender)) revert UnauthorizedOrgAdmin(orgId, msg.sender);
+        if (!reportAdminAssigned[_reportId][msg.sender]) revert UnauthorizedOrgAdmin(orgId, msg.sender);
+        if (adminVotes[_reportId][msg.sender] != 0) revert();
+        if (_vote < 1 || _vote > 3) revert();
+
+        adminVotes[_reportId][msg.sender] = _vote;
+        if (_vote == 1) {
+            reportApproveCount[_reportId]++;
+        } else if (_vote == 2) {
+            reportRejectCount[_reportId]++;
+        } else if (_vote == 3) {
+            reportEscalateCount[_reportId]++;
+        }
+
+        emit AdminVoted(_reportId, msg.sender, _vote, block.timestamp);
+    }
+
+    function finalizeConsensus(uint256 _reportId) external {
+        if (_reportId >= reports.length) revert ReportDoesNotExist();
+        uint256 orgId = reportOrgId[_reportId];
+        if (!isOrgAdmin(orgId, msg.sender)) revert UnauthorizedOrgAdmin(orgId, msg.sender);
+
+        if (reportConsensusStatus[_reportId] != ConsensusStatus.PENDING_REVIEW) {
+            return;
+        }
+
+        uint256 assigned = reportAssignedAdmins[_reportId].length;
+        uint256 approves = reportApproveCount[_reportId];
+        uint256 rejects = reportRejectCount[_reportId];
+        uint256 escalates = reportEscalateCount[_reportId];
+
+        ConsensusStatus status = ConsensusStatus.PENDING_REVIEW;
+        if (assigned == 0) {
+            status = ConsensusStatus.PENDING_REVIEW;
+        } else if (approves * 2 > assigned) {
+            status = ConsensusStatus.APPROVED;
+        } else if (rejects * 2 > assigned) {
+            status = ConsensusStatus.REJECTED;
+        } else if (escalates > 0) {
+            status = ConsensusStatus.ESCALATED;
+        }
+
+        reportConsensusStatus[_reportId] = status;
+        emit ReportConsensusFinalized(_reportId, status, block.timestamp);
+    }
+
+    // Anchor an off-chain consensus commitment with signatures from assigned admins.
+    // commitment = keccak256(abi.encodePacked(reportId, decision,uint256 timestamp, chainId))
+    // decision: 1=APPROVED, 2=REJECTED, 3=ESCALATED
+    function anchorConsensus(
+        uint256 _reportId,
+        uint8 _decision,
+        uint256 _timestamp,
+        bytes32 _commitment,
+        address[] calldata _signers,
+        bytes[] calldata _signatures
+    ) external {
+        if (_reportId >= reports.length) revert ReportDoesNotExist();
+        if (_signers.length != _signatures.length) revert();
+
+        uint256 orgId = reportOrgId[_reportId];
+        if (!organizationExists[orgId]) revert OrganizationDoesNotExist();
+
+        uint256 assigned = reportAssignedAdmins[_reportId].length;
+        if (assigned == 0) revert();
+
+        // verify commitment
+        bytes32 expected = keccak256(abi.encodePacked(_reportId, _decision, _timestamp, block.chainid));
+        if (expected != _commitment) revert();
+        if (_timestamp > block.timestamp) revert();
+        if (block.timestamp - _timestamp > 30 days) revert();
+
+        // verify signatures and signers
+        uint256 valid = 0;
+        for (uint256 i = 0; i < _signers.length; i++) {
+            address signer = _signers[i];
+            bytes memory sig = _signatures[i];
+            // recover signer from signature over the eth-signed commitment
+            bytes32 ethHash = ECDSA.toEthSignedMessageHash(_commitment);
+            address recovered = ECDSA.recover(ethHash, sig);
+            if (recovered != signer) continue;
+            if (!reportAdminAssigned[_reportId][signer]) continue;
+            if (!isOrgAdmin(orgId, signer)) continue;
+
+            // ensure uniqueness of signer in this batch
+            bool duplicate = false;
+            for (uint256 j = 0; j < i; j++) {
+                if (_signers[j] == signer) {
+                    duplicate = true;
+                    break;
+                }
+            }
+            if (duplicate) continue;
+
+            valid++;
+        }
+
+        // require majority of assigned admins to have signed
+        if (valid * 2 <= assigned) revert();
+
+        // map decision to status
+        ConsensusStatus status;
+        if (_decision == 1) status = ConsensusStatus.APPROVED;
+        else if (_decision == 2) status = ConsensusStatus.REJECTED;
+        else if (_decision == 3) status = ConsensusStatus.ESCALATED;
+        else revert();
+
+        reportConsensusStatus[_reportId] = status;
+        reportConsensusCommitment[_reportId] = _commitment;
+
+        emit ReportConsensusFinalized(_reportId, status, block.timestamp);
     }
 }
