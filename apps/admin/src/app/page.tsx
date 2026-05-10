@@ -38,6 +38,15 @@ const CARDS = [
       "Browse all submitted reports. Fetch encrypted evidence from IPFS and decrypt locally.",
     action: "VIEW REPORTS",
   },
+  {
+    href: "/admin/consensus",
+    icon: "how_to_vote",
+    step: "05",
+    title: "Consensus",
+    description:
+      "Open multi-admin voting rounds for reports. Reach collective decisions and anchor commitments on-chain.",
+    action: "MANAGE CONSENSUS",
+  },
 ];
 
 export default function HomePage() {
