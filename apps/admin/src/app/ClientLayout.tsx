@@ -7,6 +7,7 @@ const ADMIN_NAV_ITEMS: NavItem[] = [
   { href: "/admin/keys", icon: "key", label: "Admin Keys" },
   { href: "/admin/admins", icon: "manage_accounts", label: "Admin Manager" },
   { href: "/reviewer", icon: "description", label: "Reviewer" },
+  { href: "/admin/consensus", icon: "how_to_vote", label: "Consensus" },
 ];
 
 export default function ClientLayout({ children }: { children: React.ReactNode }) {
