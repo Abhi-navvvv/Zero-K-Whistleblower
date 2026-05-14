@@ -39,3 +39,4 @@ node_modules/
 
 # Generated Prisma client (created at build time)
 **/src/generated/
+scratch.js
