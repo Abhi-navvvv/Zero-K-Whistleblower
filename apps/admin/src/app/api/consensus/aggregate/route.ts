@@ -22,7 +22,7 @@ export async function POST(req: NextRequest) {
       counts,
       assigned,
       voted: (request.votes ?? []).length,
-      majorityThreshold: assigned > 0 ? Math.floor(assigned / 2) + 1 : null,
+      majorityThreshold: assigned > 0 ? Math.floor((assigned * 2) / 3) + 1 : null,
     };
 
     if (!decision) {
