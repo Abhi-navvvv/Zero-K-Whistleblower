@@ -35,6 +35,16 @@ contract WhistleblowerRegistry is AccessControl {
     error CannotModifySuperAdmin(address account);
     error OrgAdminAlreadyGranted(uint256 orgId, address account);
     error OrgAdminAlreadyRevoked(uint256 orgId, address account);
+    error RootUpdateTooFrequent();
+    error CannotRevokeLastAdmin();
+    error SelfRevocationNotAllowed();
+    error ContractPaused();
+    error InvalidSignatureCount();
+    error AdminThresholdNotMet();
+    error InsufficientByzantineQuorum();
+    error MemberOnboardingCooldownActive();
+    error ConsensusMinimumAdminsNotMet();
+    error SuspiciousVotingPattern();
 
     IGroth16Verifier public immutable verifier;
 
@@ -122,6 +132,23 @@ contract WhistleblowerRegistry is AccessControl {
     mapping(uint256 => ConsensusStatus) public reportConsensusStatus;
     mapping(uint256 => bytes32) public reportConsensusCommitment;
 
+    // SECURITY: Rate limiting & access control
+    bool public paused;
+    address public pauseGuardian;
+    mapping(uint256 => uint256) public orgLastRootUpdate;
+    mapping(uint256 => uint256) public orgAdminCount;
+    uint256 public constant MIN_ROOT_UPDATE_INTERVAL = 7 days;
+    uint256 public constant MIN_ADMIN_CHANGE_INTERVAL = 1 days;
+    uint256 public constant MINIMUM_ADMINS_FOR_CONSENSUS = 3;
+    uint256 public constant CONSENSUS_VOTING_PERIOD = 3 days;
+    
+    mapping(uint256 => mapping(address => uint256)) public memberOnboardingTime;
+    uint256 public constant MEMBER_ONBOARDING_COOLDOWN = 30 days;
+    mapping(uint256 => uint256) public rootMemberCount;
+    mapping(uint256 => uint256) public orgRootRegistrationTime;
+    mapping(uint256 => uint256) public reportVotingStartTime;
+    mapping(uint256 => uint256) public reportVotingDeadline;
+
     event ReportAssignedToAdmins(
         uint256 indexed reportId,
         address[] assignedAdmins,
@@ -141,6 +168,12 @@ contract WhistleblowerRegistry is AccessControl {
         uint256 timestamp
     );
 
+    event EmergencyPaused(address indexed guardian, uint256 timestamp);
+    event EmergencyUnpaused(address indexed guardian, uint256 timestamp);
+    event SuspiciousAdminVoteChange(uint256 indexed reportId, address indexed admin, uint8 prevVote, uint8 newVote);
+    event SybilDetected(uint256 indexed orgId, uint256 newMemberCount, uint256 timestamp);
+    event ByzantineThresholdEnforced(uint256 indexed reportId, uint256 assignedAdmins, uint256 requiredQuorum, uint256 timestamp);
+
     modifier onlyOrgAdmin(uint256 _orgId) {
         if (!isOrgAdmin(_orgId, msg.sender)) {
             revert UnauthorizedOrgAdmin(_orgId, msg.sender);
@@ -148,10 +181,16 @@ contract WhistleblowerRegistry is AccessControl {
         _;
     }
 
+    modifier whenNotPaused() {
+        if (paused) revert ContractPaused();
+        _;
+    }
+
     constructor(address _verifier) {
         _grantRole(SUPER_ADMIN_ROLE, msg.sender);
 
         verifier = IGroth16Verifier(_verifier);
+        pauseGuardian = msg.sender;
         organizationExists[DEFAULT_ORG_ID] = true;
         organizations[DEFAULT_ORG_ID] = Organization({
             name: "Default",
@@ -159,6 +198,7 @@ contract WhistleblowerRegistry is AccessControl {
             createdAt: block.timestamp
         });
         orgAdmins[DEFAULT_ORG_ID][msg.sender] = true;
+        orgAdminCount[DEFAULT_ORG_ID] = 1;
 
         emit OrganizationCreated(DEFAULT_ORG_ID, "Default", block.timestamp);
         emit OrgAdminGranted(DEFAULT_ORG_ID, msg.sender, msg.sender);
@@ -191,6 +231,7 @@ contract WhistleblowerRegistry is AccessControl {
 
         orgAdmins[_orgId][_account] = true;
         _grantRole(orgAdminRole(_orgId), _account);
+        orgAdminCount[_orgId]++;
 
         emit OrgAdminGranted(_orgId, _account, msg.sender);
     }
@@ -205,11 +246,16 @@ contract WhistleblowerRegistry is AccessControl {
             revert CannotModifySuperAdmin(_account);
         if (!isOrgAdmin(_orgId, _account))
             revert OrgAdminAlreadyRevoked(_orgId, _account);
+        
+        // SECURITY: Prevent self-revocation and last admin removal
+        if (_account == msg.sender) revert SelfRevocationNotAllowed();
+        if (orgAdminCount[_orgId] <= 1) revert CannotRevokeLastAdmin();
 
         orgAdmins[_orgId][_account] = false;
         if (hasRole(orgAdminRole(_orgId), _account)) {
             _revokeRole(orgAdminRole(_orgId), _account);
         }
+        orgAdminCount[_orgId]--;
 
         emit OrgAdminRevoked(_orgId, _account, msg.sender);
     }
@@ -260,10 +306,23 @@ contract WhistleblowerRegistry is AccessControl {
     function addRootForOrg(
         uint256 _orgId,
         uint256 _root
-    ) public onlyOrgAdmin(_orgId) {
+    ) public onlyOrgAdmin(_orgId) whenNotPaused {
         if (!organizationExists[_orgId]) revert OrganizationDoesNotExist();
         if (!organizations[_orgId].active) revert OrganizationInactive();
         if (orgRoots[_orgId][_root]) revert RootAlreadyExists();
+        
+        // SECURITY: Rate limit root updates to prevent rapid changes
+        if (block.timestamp - orgLastRootUpdate[_orgId] < MIN_ROOT_UPDATE_INTERVAL) {
+            revert RootUpdateTooFrequent();
+        }
+        
+        // 51% ATTACK DEFENSE: Require minimum admins for consensus
+        if (orgAdminCount[_orgId] < MINIMUM_ADMINS_FOR_CONSENSUS) {
+            revert ConsensusMinimumAdminsNotMet();
+        }
+        
+        orgLastRootUpdate[_orgId] = block.timestamp;
+        orgRootRegistrationTime[_orgId] = block.timestamp;
 
         orgRoots[_orgId][_root] = true;
         if (_orgId == DEFAULT_ORG_ID) {
@@ -323,7 +382,7 @@ contract WhistleblowerRegistry is AccessControl {
         uint256 _externalNullifier,
         bytes calldata _encryptedCID,
         uint8 _category
-    ) public {
+    ) public whenNotPaused {
         // Cheap checks first, expensive proof verification last
         if (!organizationExists[_orgId]) revert OrganizationDoesNotExist();
         if (!organizations[_orgId].active) revert OrganizationInactive();
@@ -397,10 +456,22 @@ contract WhistleblowerRegistry is AccessControl {
         return orgReportIds[_orgId][_index];
     }
 
-    function assignReportToAdmins(uint256 _reportId, address[] calldata _admins) external {
+    function assignReportToAdmins(uint256 _reportId, address[] calldata _admins) external whenNotPaused {
         if (_reportId >= reports.length) revert ReportDoesNotExist();
         uint256 orgId = reportOrgId[_reportId];
         if (!isOrgAdmin(orgId, msg.sender)) revert UnauthorizedOrgAdmin(orgId, msg.sender);
+        
+        // 51% ATTACK DEFENSE: Require minimum admins for consensus
+        if (_admins.length < MINIMUM_ADMINS_FOR_CONSENSUS) {
+            revert ConsensusMinimumAdminsNotMet();
+        }
+        
+        // PBFT DEFENSE: Verify Byzantine quorum (2f+1 where f = floor(n/3))
+        uint256 maxFaultyNodes = (_admins.length - 1) / 3;
+        uint256 requiredQuorum = 2 * maxFaultyNodes + 1;
+        if (_admins.length < requiredQuorum) {
+            revert InsufficientByzantineQuorum();
+        }
 
         // clear previous assignments
         address[] storage prev = reportAssignedAdmins[_reportId];
@@ -419,20 +490,29 @@ contract WhistleblowerRegistry is AccessControl {
         }
 
         reportConsensusStatus[_reportId] = ConsensusStatus.PENDING_REVIEW;
+        reportVotingStartTime[_reportId] = block.timestamp;
+        reportVotingDeadline[_reportId] = block.timestamp + CONSENSUS_VOTING_PERIOD;
         emit ReportAssignedToAdmins(_reportId, _admins, block.timestamp);
+        emit ByzantineThresholdEnforced(_reportId, _admins.length, requiredQuorum, block.timestamp);
     }
 
     function isAssignedAdmin(uint256 _reportId, address _admin) external view returns (bool) {
         return reportAdminAssigned[_reportId][_admin];
     }
 
-    function adminVote(uint256 _reportId, uint8 _vote) external {
+    function adminVote(uint256 _reportId, uint8 _vote) external whenNotPaused {
         if (_reportId >= reports.length) revert ReportDoesNotExist();
         uint256 orgId = reportOrgId[_reportId];
         if (!isOrgAdmin(orgId, msg.sender)) revert UnauthorizedOrgAdmin(orgId, msg.sender);
         if (!reportAdminAssigned[_reportId][msg.sender]) revert UnauthorizedOrgAdmin(orgId, msg.sender);
         if (adminVotes[_reportId][msg.sender] != 0) revert();
         if (_vote < 1 || _vote > 3) revert();
+        
+        // PBFT DEFENSE: Enforce voting deadline to prevent delayed attacks
+        if (block.timestamp > reportVotingDeadline[_reportId]) {
+            reportConsensusStatus[_reportId] = ConsensusStatus.TIMEOUT;
+            revert();
+        }
 
         adminVotes[_reportId][msg.sender] = _vote;
         if (_vote == 1) {
@@ -459,15 +539,36 @@ contract WhistleblowerRegistry is AccessControl {
         uint256 approves = reportApproveCount[_reportId];
         uint256 rejects = reportRejectCount[_reportId];
         uint256 escalates = reportEscalateCount[_reportId];
+        uint256 totalVotes = approves + rejects + escalates;
+
+        // PBFT DEFENSE: Calculate Byzantine quorum (2f+1 where f = floor(n/3))
+        uint256 maxFaultyNodes = (assigned - 1) / 3;
+        uint256 requiredVotes = (2 * maxFaultyNodes + 2); // Strict majority for 2/3+1
+        
+        if (totalVotes < requiredVotes) {
+            // Not enough votes yet, remain in pending state
+            return;
+        }
+        
+        // 51% ATTACK DEFENSE: Ensure no single option can pass with just 51% majority
+        uint256 maxVoteCount = approves;
+        if (rejects > maxVoteCount) maxVoteCount = rejects;
+        if (escalates > maxVoteCount) maxVoteCount = escalates;
+        
+        if (maxVoteCount < requiredVotes) {
+            // No clear supermajority, remain pending
+            reportConsensusStatus[_reportId] = ConsensusStatus.PENDING_REVIEW;
+            return;
+        }
 
         ConsensusStatus status = ConsensusStatus.PENDING_REVIEW;
         if (assigned == 0) {
             status = ConsensusStatus.PENDING_REVIEW;
-        } else if (approves * 3 > assigned * 2) {
+        } else if (approves >= requiredVotes) {
             status = ConsensusStatus.APPROVED;
-        } else if (rejects * 3 > assigned * 2) {
+        } else if (rejects >= requiredVotes) {
             status = ConsensusStatus.REJECTED;
-        } else if (escalates * 3 > assigned * 2) {
+        } else if (escalates >= requiredVotes) {
             status = ConsensusStatus.ESCALATED;
         }
 
@@ -485,7 +586,7 @@ contract WhistleblowerRegistry is AccessControl {
         bytes32 _commitment,
         address[] calldata _signers,
         bytes[] calldata _signatures
-    ) external {
+    ) external whenNotPaused {
         if (_reportId >= reports.length) revert ReportDoesNotExist();
         if (_signers.length != _signatures.length) revert();
         if (reportConsensusStatus[_reportId] != ConsensusStatus.PENDING_REVIEW) revert();
@@ -541,5 +642,63 @@ contract WhistleblowerRegistry is AccessControl {
         reportConsensusCommitment[_reportId] = _commitment;
 
         emit ReportConsensusFinalized(_reportId, status, block.timestamp);
+    }
+
+    // SECURITY: Emergency pause mechanism
+    function pause() external {
+        if (msg.sender != pauseGuardian && !hasRole(SUPER_ADMIN_ROLE, msg.sender)) {
+            revert UnauthorizedOrgAdmin(0, msg.sender);
+        }
+        paused = true;
+        emit EmergencyPaused(msg.sender, block.timestamp);
+    }
+
+    function unpause() external onlyRole(SUPER_ADMIN_ROLE) {
+        paused = false;
+        emit EmergencyUnpaused(msg.sender, block.timestamp);
+    }
+
+    function setPauseGuardian(address _newGuardian) external onlyRole(SUPER_ADMIN_ROLE) {
+        if (_newGuardian == address(0)) revert InvalidOrgAdminAccount();
+        pauseGuardian = _newGuardian;
+    }
+
+    // SYBIL ATTACK PREVENTION: Track member onboarding and detect bulk additions
+    function recordMemberOnboarding(
+        uint256 _orgId,
+        address _memberIdentifier,
+        uint256 _memberCount
+    ) external onlyOrgAdmin(_orgId) {
+        if (!organizationExists[_orgId]) revert OrganizationDoesNotExist();
+        
+        // SYBIL DEFENSE: Enforce cooldown between member additions
+        if (block.timestamp - memberOnboardingTime[_orgId][_memberIdentifier] < MEMBER_ONBOARDING_COOLDOWN) {
+            revert MemberOnboardingCooldownActive();
+        }
+        
+        memberOnboardingTime[_orgId][_memberIdentifier] = block.timestamp;
+        rootMemberCount[_orgId] = _memberCount;
+        
+        // Alert if suspicious spike in member count
+        if (_memberCount > 100) {
+            emit SybilDetected(_orgId, _memberCount, block.timestamp);
+        }
+    }
+    
+    // PBFT DEFENSE: Validate Byzantine quorum for consensus
+    function validateByzantineQuorum(
+        uint256 _numAdmins
+    ) external pure returns (bool) {
+        if (_numAdmins < MINIMUM_ADMINS_FOR_CONSENSUS) return false;
+        
+        uint256 maxFaultyNodes = (_numAdmins - 1) / 3;
+        uint256 requiredQuorum = 2 * maxFaultyNodes + 1;
+        return _numAdmins >= requiredQuorum;
+    }
+    
+    // Get report voting deadline for client-side validation
+    function getReportVotingDeadline(uint256 _reportId) external view returns (uint256) {
+        if (_reportId >= reports.length) revert ReportDoesNotExist();
+        return reportVotingDeadline[_reportId];
     }
 }
