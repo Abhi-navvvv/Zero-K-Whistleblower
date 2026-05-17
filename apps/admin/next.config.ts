@@ -3,9 +3,7 @@ import path from "path";
 
 const nextConfig: NextConfig = {
   outputFileTracingRoot: path.join(__dirname, "../.."),
-  outputFileTracingIncludes: {
-    "/api/**": ["../../packages/db/src/generated/client/**/*"],
-  },
+  // outputFileTracingIncludes removed to use default Prisma Next.js handling
   experimental: {
     optimizePackageImports: [
       "@zk-whistleblower/shared",
