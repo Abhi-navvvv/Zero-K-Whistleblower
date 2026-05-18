@@ -1,6 +1,6 @@
 import type { EncryptedMessage } from "@zk-whistleblower/shared/src/messaging";
 import { prisma } from "./client";
-import type { Prisma } from "./generated/client";
+import type { Prisma } from "@prisma/client";
 
 export async function listMessages(threadId: string): Promise<EncryptedMessage[]> {
     const rows = await prisma.message.findMany({
