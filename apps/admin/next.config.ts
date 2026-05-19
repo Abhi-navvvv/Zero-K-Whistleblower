@@ -3,7 +3,14 @@ import path from "path";
 
 const nextConfig: NextConfig = {
   outputFileTracingRoot: path.join(__dirname, "../.."),
-  // outputFileTracingIncludes removed to use default Prisma Next.js handling
+  outputFileTracingIncludes: {
+    "/*": [
+      "../../node_modules/.pnpm/@prisma+client@*/node_modules/.prisma/client/**",
+      "../../node_modules/.pnpm/@prisma+engines@*/node_modules/@prisma/engines/**",
+      "../../node_modules/.prisma/client/**",
+      "../../node_modules/@prisma/client/**",
+    ],
+  },
   serverExternalPackages: ["@prisma/client"],
   experimental: {
     optimizePackageImports: [
