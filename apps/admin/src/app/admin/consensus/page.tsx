@@ -281,7 +281,7 @@ function LookupPanel({
 
 // ─── Step 2: Cast Vote ─────────────────────────────────────────────────────
 
-function CastVotePanel({ requestId }: { requestId: string }) {
+function CastVotePanel({ requestId, selectedAdminsCount }: { requestId: string; selectedAdminsCount: number }) {
   const { address } = useAccount();
   const { signMessageAsync } = useSignMessage();
 
@@ -293,6 +293,10 @@ function CastVotePanel({ requestId }: { requestId: string }) {
 
   const handleVote = useCallback(async () => {
     if (!vote || !address) return;
+    if (selectedAdminsCount === 0) {
+      setError("This consensus request has no selected admins. Reopen the round with a committee before voting.");
+      return;
+    }
     setError("");
     setSuccess("");
     setPending(true);
@@ -326,7 +330,7 @@ function CastVotePanel({ requestId }: { requestId: string }) {
     } finally {
       setPending(false);
     }
-  }, [vote, address, requestId, reason, signMessageAsync]);
+  }, [vote, address, requestId, reason, selectedAdminsCount, signMessageAsync]);
 
   return (
     <section className="card space-y-5">
@@ -403,6 +407,14 @@ function CastVotePanel({ requestId }: { requestId: string }) {
   );
 }
 
+function VoteTallyEmptyState() {
+  return (
+    <div className="bg-yellow-900/20 border border-yellow-500/30 p-3 text-xs font-mono text-yellow-300">
+      No selected admins are assigned to this consensus request. Reopen the round with a committee before voting or aggregating.
+    </div>
+  );
+}
+
 // ─── Step 3: Aggregate & Commit ─────────────────────────────────────────────
 
 interface TallyInfo {
@@ -414,7 +426,7 @@ interface TallyInfo {
 
 function VoteTallyDisplay({ tally }: { tally: TallyInfo }) {
   const { counts, assigned, voted, majorityThreshold } = tally;
-  const needsToWin = majorityThreshold ?? 1;
+  const needsToWin = majorityThreshold ?? 0;
 
   // Which option is leading?
   const leading = (Object.entries(counts) as [VoteOption, number][]).reduce(
@@ -432,14 +444,16 @@ function VoteTallyDisplay({ tally }: { tally: TallyInfo }) {
           <p className="text-[10px] font-mono text-slate-500 uppercase tracking-widest mt-1">Voted</p>
         </div>
         <div className="bg-white/5 border border-white/10 p-3 text-center">
-          <p className="text-2xl font-black text-white">{assigned > 0 ? assigned : "∞"}</p>
+          <p className="text-2xl font-black text-white">{assigned}</p>
           <p className="text-[10px] font-mono text-slate-500 uppercase tracking-widest mt-1">Assigned</p>
         </div>
         <div className="bg-white/5 border border-white/10 p-3 text-center">
-          <p className="text-2xl font-black text-purple-400">{needsToWin}</p>
+          <p className="text-2xl font-black text-purple-400">{majorityThreshold ?? "—"}</p>
           <p className="text-[10px] font-mono text-slate-500 uppercase tracking-widest mt-1">For Supermajority</p>
         </div>
       </div>
+
+      {assigned === 0 && <VoteTallyEmptyState />}
 
       {/* Per-option bars */}
       <div className="space-y-2">
@@ -672,7 +686,7 @@ export default function ConsensusPage() {
               </button>
             </div>
 
-            <CastVotePanel requestId={activeRequest.id} />
+            <CastVotePanel requestId={activeRequest.id} selectedAdminsCount={activeRequest.selectedAdmins.length} />
             <AggregatePanel requestId={activeRequest.id} />
           </>
         )}

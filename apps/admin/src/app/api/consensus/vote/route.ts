@@ -58,7 +58,12 @@ export async function POST(req: NextRequest) {
     const normalizedAdminAddress = normalizeConsensusAdmins([adminAddress])[0];
     const normalizedAdmins = normalizeConsensusAdmins(request.selectedAdmins ?? []);
     if (normalizedAdmins.length === 0) {
-      return NextResponse.json({ error: "Consensus request has no selected admins" }, { status: 409 });
+      return NextResponse.json(
+        {
+          error: "This consensus request has no selected admins. Reopen the round with a committee before voting.",
+        },
+        { status: 409 }
+      );
     }
     if (!normalizedAdmins.includes(normalizedAdminAddress)) {
       return NextResponse.json({ error: "Wallet is not part of the selected admin committee" }, { status: 403 });
