@@ -52,7 +52,7 @@ async function uploadViaApi(payload: unknown, failurePrefix: string): Promise<st
   };
   // Attach upload auth key. This is a per-deployment upload token,
   // distinct from the Pinata JWT (which stays server-only).
-  const uploadKey = process.env.NEXT_PUBLIC_UPLOAD_API_KEY;
+  const uploadKey = process.env.UPLOAD_API_KEY;
   if (uploadKey) {
     headers["x-upload-key"] = uploadKey;
   }

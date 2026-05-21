@@ -4,8 +4,21 @@ import { getOrgPrivateKeyConfig } from "@zk-whistleblower/shared/src/orgKeys";
 import { decryptFile, isReportManifest, type EncryptedFileBlob } from "@zk-whistleblower/shared/src/fileEncryption";
 import { type ReportManifest } from "@zk-whistleblower/shared/src/fileEncryption";
 import { deriveThreadId } from "@zk-whistleblower/shared/src/messaging";
+import { timingSafeEqual } from "crypto";
 
 export const runtime = "nodejs";
+
+/**
+ * Helper to safely compare strings in constant time to prevent timing attacks
+ */
+function safeCompare(a: string | undefined | null, b: string | undefined | null): boolean {
+  if (!a || !b || a.length !== b.length) return false;
+  try {
+    return timingSafeEqual(Buffer.from(a), Buffer.from(b));
+  } catch (e) {
+    return false;
+  }
+}
 
 function normalizeCid(input: string): string {
   const raw = input.trim();
@@ -51,8 +64,32 @@ async function fetchIPFS<T = unknown>(cid: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+// --- In-memory rate limiter (per-IP, sliding window) ---
+const RATE_LIMIT_WINDOW_MS = 60_000; // 1 minute
+const RATE_LIMIT_MAX_REQUESTS = 20;
+const rateLimitMap = new Map<string, number[]>();
+
+function isRateLimited(ip: string): boolean {
+  const now = Date.now();
+  const timestamps = rateLimitMap.get(ip) ?? [];
+  const recent = timestamps.filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
+  if (recent.length >= RATE_LIMIT_MAX_REQUESTS) return true;
+  recent.push(now);
+  rateLimitMap.set(ip, recent);
+  return false;
+}
+
 export async function POST(req: NextRequest) {
   try {
+    // --- Rate limiting ---
+    const clientIp = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+    if (isRateLimited(clientIp)) {
+      return NextResponse.json(
+        { error: "Rate limit exceeded — too many requests. Try again shortly." },
+        { status: 429 }
+      );
+    }
+
     // --- Reviewer API key authentication (fail-closed) ---
     const expectedKey = process.env.REVIEWER_API_KEY;
     if (!expectedKey) {
@@ -62,7 +99,7 @@ export async function POST(req: NextRequest) {
       );
     }
     const providedKey = req.headers.get("x-api-key");
-    if (!providedKey || providedKey !== expectedKey) {
+    if (!safeCompare(providedKey, expectedKey)) {
       return NextResponse.json(
         { error: "Unauthorized — provide a valid reviewer API key to decrypt reports" },
         { status: 401 }

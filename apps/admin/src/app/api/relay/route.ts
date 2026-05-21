@@ -3,8 +3,21 @@ import { createPublicClient, createWalletClient, http } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { hardhat, sepolia } from "viem/chains";
 import { REGISTRY_ABI, REGISTRY_ADDRESS } from "@zk-whistleblower/shared/src/contracts";
+import { timingSafeEqual } from "crypto";
 
 export const runtime = "nodejs";
+
+/**
+ * Helper to safely compare strings in constant time to prevent timing attacks
+ */
+function safeCompare(a: string | undefined | null, b: string | undefined | null): boolean {
+  if (!a || !b || a.length !== b.length) return false;
+  try {
+    return timingSafeEqual(Buffer.from(a), Buffer.from(b));
+  } catch (e) {
+    return false;
+  }
+}
 
 type RelayAction =
     | "addRoot"
@@ -98,7 +111,7 @@ export async function POST(req: NextRequest) {
                 );
             }
             const providedKey = req.headers.get("x-api-key");
-            if (!providedKey || providedKey !== expectedKey) {
+            if (!safeCompare(providedKey, expectedKey)) {
                 return NextResponse.json(
                     { error: "Unauthorized — invalid or missing API key" },
                     { status: 401 }

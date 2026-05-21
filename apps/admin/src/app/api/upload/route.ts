@@ -1,4 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
+import { timingSafeEqual } from "crypto";
+
+/**
+ * Helper to safely compare strings in constant time to prevent timing attacks
+ */
+function safeCompare(a: string | undefined | null, b: string | undefined | null): boolean {
+  if (!a || !b || a.length !== b.length) return false;
+  try {
+    return timingSafeEqual(Buffer.from(a), Buffer.from(b));
+  } catch (e) {
+    return false;
+  }
+}
 
 function normalizeJwt(value: string): string {
   const trimmed = value.trim().replace(/^['\"]|['\"]$/g, "");
@@ -72,7 +85,7 @@ export async function POST(req: NextRequest) {
     );
   }
   const providedKey = req.headers.get("x-upload-key");
-  if (!providedKey || providedKey !== uploadKey) {
+  if (!safeCompare(providedKey, uploadKey)) {
     return NextResponse.json(
       { error: "Unauthorized — invalid or missing upload key" },
       { status: 401 }
