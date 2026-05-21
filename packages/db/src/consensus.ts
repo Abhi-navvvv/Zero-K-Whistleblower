@@ -116,9 +116,12 @@ export async function computeConsensusResult(consensusRequestId: string) {
 }
 
 export function buildConsensusCommitment(reportId: number, decision: number, timestamp: number, chainId: number) {
-    const str = `${reportId}:${decision}:${timestamp}:${chainId}`;
-    const bytes = ethers.toUtf8Bytes(str);
-    const commitment = ethers.keccak256(bytes);
+    // Match Solidity: keccak256(abi.encodePacked(reportId, decision, timestamp, chainId))
+    const packed = ethers.solidityPacked(
+        ["uint256", "uint8", "uint256", "uint256"],
+        [BigInt(reportId), BigInt(decision), BigInt(timestamp), BigInt(chainId)]
+    );
+    const commitment = ethers.keccak256(packed);
     return commitment as string;
 }
 
