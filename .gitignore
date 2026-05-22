@@ -36,6 +36,11 @@ node_modules/
 
 # Environment variables
 .env
+.env.local
+.env.vercel
+.env.vercel-check
+.env.*.local
+*.local
 
 # Generated Prisma client (created at build time)
 **/src/generated/
