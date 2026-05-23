@@ -82,6 +82,7 @@ model ReportConsensusRequest {
 
   votes AdminConsensusVote[]
   decision AdminDecision?
+  chatMessages AdminChatMessage[]
 
   @@index([onChainReportId])
   @@index([status, createdAt])
@@ -112,4 +113,25 @@ model AdminDecision {
   decidedByConsensus  Int?
   executedAt          DateTime?
   executedBy          String?
+}
+
+model AdminChatKey {
+  adminAddress String   @id
+  publicKeyJwk String
+  signature    String
+  createdAt    DateTime @default(now())
+}
+
+model AdminChatMessage {
+  id                 String                 @id @default(cuid())
+  consensusRequestId String
+  consensusRequest   ReportConsensusRequest @relation(fields: [consensusRequestId], references: [id], onDelete: Cascade)
+  senderAddress      String
+  senderPseudonym    String
+  ciphertext         String
+  iv                 String
+  encryptedKeys      Json
+  createdAt          DateTime               @default(now())
+
+  @@index([consensusRequestId, createdAt])
 }
