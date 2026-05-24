@@ -4,6 +4,7 @@ import { useState, useCallback, useEffect } from "react";
 import { Icon, AdminGate, useAccount, useSignMessage, useOrg } from "@zk-whistleblower/ui";
 import { getLeagues, getLeagueMembers } from "@zk-whistleblower/shared/src/leagueStore";
 import { buildConsensusRequestMessage, buildConsensusVoteMessage, normalizeConsensusAdmins } from "@zk-whistleblower/shared/src/consensus";
+import AdminChatPanel from "./AdminChatPanel";
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -687,6 +688,7 @@ export default function ConsensusPage() {
             </div>
 
             <CastVotePanel requestId={activeRequest.id} selectedAdminsCount={activeRequest.selectedAdmins.length} />
+            <AdminChatPanel requestId={activeRequest.id} selectedAdmins={activeRequest.selectedAdmins} />
             <AggregatePanel requestId={activeRequest.id} />
           </>
         )}
