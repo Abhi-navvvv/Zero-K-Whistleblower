@@ -364,19 +364,19 @@ export default function AdminChatPanel({ requestId, selectedAdmins }: AdminChatP
   }
 
   return (
-    <section className="card border border-purple-500/20 bg-black/40 flex flex-col h-[500px]">
+    <section className="card border border-white/10 bg-white/[0.02] flex flex-col h-[500px]">
       {/* Header */}
       <div className="flex justify-between items-center border-b border-white/10 pb-3 mb-4 shrink-0">
         <div className="flex items-center gap-3">
           <span className="relative flex h-2 w-2">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-purple-400 opacity-75"></span>
-            <span className="relative inline-flex rounded-full h-2 w-2 bg-purple-500"></span>
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+            <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
           </span>
           <div>
             <h3 className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-1.5 font-mono">
               Secure Committee Chat Room
               <span title="End-to-End Encrypted" className="flex items-center">
-                <Icon name="verified_user" className="text-purple-400 text-sm" />
+                <Icon name="verified_user" className="text-green-500/80 text-sm" />
               </span>
             </h3>
             <p className="text-[10px] font-mono text-slate-500 mt-0.5">
@@ -385,7 +385,7 @@ export default function AdminChatPanel({ requestId, selectedAdmins }: AdminChatP
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <span className="text-[9px] font-mono bg-purple-500/10 text-purple-400 px-2 py-0.5 border border-purple-500/20 uppercase tracking-widest">
+          <span className="text-[9px] font-mono bg-white/5 text-slate-400 px-2 py-0.5 border border-white/10 uppercase tracking-widest">
             E2EE Active
           </span>
         </div>
@@ -395,12 +395,12 @@ export default function AdminChatPanel({ requestId, selectedAdmins }: AdminChatP
       <div className="flex-1 overflow-y-auto mb-4 space-y-3 pr-2 scrollbar-thin">
         {loading ? (
           <div className="flex flex-col items-center justify-center h-full gap-2 text-slate-500">
-            <Icon name="autorenew" className="animate-spin text-xl text-purple-400" />
+            <Icon name="autorenew" className="animate-spin text-xl text-slate-400" />
             <p className="text-[10px] font-mono uppercase tracking-widest">Initializing E2EE Chat…</p>
           </div>
         ) : registering ? (
           <div className="flex flex-col items-center justify-center h-full gap-3 text-center px-6">
-            <Icon name="key" className="text-2xl text-purple-400 animate-bounce" />
+            <Icon name="key" className="text-2xl text-slate-400 animate-bounce" />
             <p className="text-xs font-bold text-white uppercase tracking-widest">Sign with Wallet</p>
             <p className="text-[10px] font-mono text-slate-500 max-w-xs leading-relaxed">
               Please sign the message in your wallet to register your secure chat key. This verifies your identity to other committee members.
@@ -408,7 +408,7 @@ export default function AdminChatPanel({ requestId, selectedAdmins }: AdminChatP
           </div>
         ) : messages.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full gap-2 text-slate-500 font-mono text-center">
-            <Icon name="chat_bubble_outline" className="text-xl text-slate-600" />
+            <Icon name="chat" className="text-xl text-slate-600" />
             <p className="text-[10px] uppercase tracking-widest">No messages yet</p>
             <p className="text-[9px] text-slate-700 max-w-xs leading-relaxed">
               Start the discussion! Messages are encrypted locally in your browser before being saved.
@@ -429,7 +429,7 @@ export default function AdminChatPanel({ requestId, selectedAdmins }: AdminChatP
               <div
                 className={`p-3 text-xs font-mono border break-all ${
                   msg.isMe
-                    ? "bg-purple-500/10 border-purple-500/30 text-purple-300"
+                    ? "bg-white/10 border-white/20 text-white"
                     : "bg-white/5 border-white/10 text-slate-300"
                 }`}
               >
@@ -448,9 +448,9 @@ export default function AdminChatPanel({ requestId, selectedAdmins }: AdminChatP
             {error}
           </p>
         )}
-        <div className="flex gap-2">
+        <div className="flex gap-3 items-center">
           <input
-            className="flex-1 input font-mono text-xs h-10 px-3"
+            className="flex-1 input font-mono text-xs h-12 px-4"
             placeholder="Type encrypted message..."
             value={text}
             onChange={(e) => setText(e.target.value)}
@@ -458,11 +458,11 @@ export default function AdminChatPanel({ requestId, selectedAdmins }: AdminChatP
           />
           <button
             type="submit"
-            className="btn-primary h-10 px-5 shrink-0 flex items-center gap-1.5"
+            className="btn-ghost shrink-0 h-12 px-6 flex items-center gap-2"
             disabled={loading || registering || !text.trim()}
           >
             <Icon name="send" className="text-sm" />
-            Send
+            <span>Send</span>
           </button>
         </div>
       </form>
