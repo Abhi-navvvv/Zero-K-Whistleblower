@@ -33,6 +33,8 @@ node_modules/
 
 # Member key files (contain encrypted secrets)
 /keys
+.keys
+**/.keys/
 
 # Environment variables
 .env
