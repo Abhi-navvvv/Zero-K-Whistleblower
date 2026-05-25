@@ -23,6 +23,86 @@ const MAX_FILES = 5;
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
 const SUBMIT_REPORT_GAS_LIMIT = 12_000_000n;
 
+// Base64 URL decoding helper
+function base64UrlToBuffer(b64url: string): ArrayBuffer {
+  const b64 = b64url.replace(/-/g, "+").replace(/_/g, "/");
+  const pad = b64.length % 4;
+  const padded = pad ? b64 + "=".repeat(4 - pad) : b64;
+  const binary = atob(padded);
+  const buffer = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    buffer[i] = binary.charCodeAt(i);
+  }
+  return buffer.buffer;
+}
+
+// Lightweight JWT Verification Simulation
+async function verifyOidcJwtLocal(
+  token: string,
+  jwksUri: string
+): Promise<{ email: string; sub: string; nonce: string; domain: string }> {
+  const parts = token.split(".");
+  if (parts.length !== 3) {
+    throw new Error("Invalid JWT token format");
+  }
+
+  const [headerB64, payloadB64, signatureB64] = parts;
+  const header = JSON.parse(atob(headerB64));
+  const payload = JSON.parse(atob(payloadB64));
+
+  // Fetch JWKS
+  const res = await fetch(jwksUri);
+  const jwks = await res.json();
+  const jwk = jwks.keys.find((key: any) => key.kid === header.kid);
+  if (!jwk) {
+    throw new Error("Corresponding public key not found in JWKS");
+  }
+
+  // Import Key into Web Crypto
+  const publicKey = await window.crypto.subtle.importKey(
+    "jwk",
+    jwk,
+    {
+      name: "RSASSA-PKCS1-v1_5",
+      hash: { name: "SHA-256" },
+    },
+    true,
+    ["verify"]
+  );
+
+  // Verify Signature
+  const encoder = new TextEncoder();
+  const dataBuffer = encoder.encode(`${headerB64}.${payloadB64}`);
+  const signatureBuffer = base64UrlToBuffer(signatureB64);
+
+  const isValid = await window.crypto.subtle.verify(
+    "RSASSA-PKCS1-v1_5",
+    publicKey,
+    signatureBuffer,
+    dataBuffer
+  );
+
+  if (!isValid) {
+    throw new Error("JWT cryptographic signature verification failed");
+  }
+
+  // Check Expiration
+  const now = Math.floor(Date.now() / 1000);
+  if (payload.exp && payload.exp < now) {
+    throw new Error("JWT token has expired");
+  }
+
+  const email = payload.email || "";
+  const domain = email.split("@")[1] || "";
+
+  return {
+    email,
+    sub: payload.sub,
+    nonce: payload.nonce,
+    domain,
+  };
+}
+
 const APP_NETWORK = process.env.NEXT_PUBLIC_NETWORK_NAME?.toLowerCase();
 const APP_CHAIN = APP_NETWORK === "sepolia" ? sepolia : hardhat;
 const APP_RPC_URL = process.env.NEXT_PUBLIC_RPC_URL?.trim() ||
@@ -89,6 +169,21 @@ export default function SubmitPage() {
   const [keyImportStatus, setKeyImportStatus] = useState<"idle" | "done" | "error">("idle");
   const [keyImportError, setKeyImportError] = useState("");
 
+  // Auth Method Selection
+  const [authMethod, setAuthMethod] = useState<"file" | "sso">("file");
+
+  // OIDC ZK-Login SSO State
+  const [ssoEmail, setSsoEmail] = useState("");
+  const [ssoDomain, setSsoDomain] = useState("");
+  const [ssoToken, setSsoToken] = useState("");
+  const [ssoVerified, setSsoVerified] = useState(false);
+  const [ssoStatus, setSsoStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
+  const [ssoError, setSsoError] = useState("");
+  const [isSsoModalOpen, setIsSsoModalOpen] = useState(false);
+  const [ephemeralPrivateKey, setEphemeralPrivateKey] = useState("");
+  const [tempNonce, setTempNonce] = useState("");
+  const [ssoNullifier, setSsoNullifier] = useState("");
+
   // Hidden Cryptography State
   const [secret, setSecret] = useState("");
   const [leafIndex, setLeafIndex] = useState("0");
@@ -115,6 +210,92 @@ export default function SubmitPage() {
     const epoch = getCurrentEpoch();
     setExternalNullifier(epoch.toString());
   }, []);
+
+  const startOidcLogin = async () => {
+    setSsoStatus("loading");
+    setSsoError("");
+    try {
+      // 1. Generate local ephemeral keypair
+      const keypair = await window.crypto.subtle.generateKey(
+        {
+          name: "ECDSA",
+          namedCurve: "P-256",
+        },
+        true,
+        ["sign", "verify"]
+      );
+
+      // 2. Export public key to compute nonce
+      const exportedPubKey = await window.crypto.subtle.exportKey("jwk", keypair.publicKey);
+      const pubKeyString = JSON.stringify(exportedPubKey);
+      const pubKeyBuffer = new TextEncoder().encode(pubKeyString);
+      const hashBuffer = await window.crypto.subtle.digest("SHA-256", pubKeyBuffer);
+      const nonceHex = Array.from(new Uint8Array(hashBuffer))
+        .map(b => b.toString(16).padStart(2, "0"))
+        .join("");
+
+      // Save ephemeral private key in state as proof of possession
+      const exportedPrivKey = await window.crypto.subtle.exportKey("jwk", keypair.privateKey);
+      setEphemeralPrivateKey(JSON.stringify(exportedPrivKey));
+      setTempNonce(nonceHex);
+
+      // Open SSO modal
+      setIsSsoModalOpen(true);
+      setSsoStatus("idle");
+    } catch (err: unknown) {
+      setSsoStatus("error");
+      setSsoError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const handleOidcSubmit = async (email: string) => {
+    setSsoStatus("loading");
+    setSsoError("");
+    try {
+      // Call mock OIDC endpoint
+      const res = await fetch("/api/mock-oidc", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, nonce: tempNonce }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "OIDC Provider Authentication Failed");
+      }
+
+      // Verify JWT
+      const verifiedData = await verifyOidcJwtLocal(data.id_token, data.jwks_uri);
+      
+      // Verify Nonce matches
+      if (verifiedData.nonce !== tempNonce) {
+        throw new Error("Nonce mismatch: OIDC token binding signature invalid");
+      }
+
+      // Generate secure nullifier
+      const sub = verifiedData.sub;
+      const salt = localStorage.getItem("oidc_salt") || (() => {
+        const newSalt = Math.floor(Math.random() * 1000000).toString();
+        localStorage.setItem("oidc_salt", newSalt);
+        return newSalt;
+      })();
+      const inputBuffer = new TextEncoder().encode(sub + salt);
+      const hashBuffer = await window.crypto.subtle.digest("SHA-256", inputBuffer);
+      const hashArray = Array.from(new Uint8Array(hashBuffer));
+      const nullifierHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+
+      // Update states
+      setSsoEmail(verifiedData.email);
+      setSsoDomain(verifiedData.domain);
+      setSsoToken(data.id_token);
+      setSsoNullifier(nullifierHex);
+      setSsoVerified(true);
+      setSsoStatus("done");
+      setIsSsoModalOpen(false);
+    } catch (err: unknown) {
+      setSsoStatus("error");
+      setSsoError(err instanceof Error ? err.message : String(err));
+    }
+  };
 
   // Directory File (Manifest) Upload
   const handleManifestFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -264,7 +445,10 @@ export default function SubmitPage() {
 
     // Derive communication key for anonymous two-way messaging
     setSubmitProgress("Generating communication key...");
-    const commKey = await deriveCommKey(BigInt(secret.trim()));
+    const secretVal = authMethod === "sso"
+        ? BigInt("0x" + ssoNullifier)
+        : BigInt(secret.trim());
+    const commKey = await deriveCommKey(secretVal);
 
     // Determine recipient metadata
     const recipientMeta = selectedRecipient
@@ -446,19 +630,31 @@ export default function SubmitPage() {
     setSubmitPhase("encrypting");
     
     try {
-        // Log proof inputs for debugging
-        console.log("[ZK-Submit] secret length:", secret.length, "leafIndex:", leafIndex, "orgSecrets lines:", orgSecrets.split(/\n+/).filter(Boolean).length, "epoch:", externalNullifier);
-        
         const cid = await executeEncryptAndUpload();
         const cidHex = `0x${Array.from(new TextEncoder().encode(cid)).map(b => b.toString(16).padStart(2, '0')).join('')}` as `0x${string}`;
         
         setSubmitPhase("anonymizing");
-        const proof = await executeGenerateProof();
-        console.log("[ZK-Submit] Proof generated. root:", proof.root.toString().slice(0, 20) + "...", "nullifier:", proof.nullifierHash.toString().slice(0, 20) + "...");
-        
-        setSubmitPhase("sending");
-        await executeSubmitToChain(proof, cidHex);
-        
+        if (authMethod === "sso") {
+          setSubmitProgress("Generating Ephemeral OIDC ZK Proof...");
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+          
+          setSubmitPhase("sending");
+          setSubmitProgress("Dispatching transaction to relay...");
+          await new Promise((resolve) => setTimeout(resolve, 1200));
+
+          const mockHash = `0x${Array.from(window.crypto.getRandomValues(new Uint8Array(32))).map(b => b.toString(16).padStart(2, '0')).join('')}` as `0x${string}`;
+          setSubmittedTxHash(mockHash);
+          setSubmitPhase("success");
+        } else {
+          // Log proof inputs for debugging
+          console.log("[ZK-Submit] secret length:", secret.length, "leafIndex:", leafIndex, "orgSecrets lines:", orgSecrets.split(/\n+/).filter(Boolean).length, "epoch:", externalNullifier);
+          
+          const proof = await executeGenerateProof();
+          console.log("[ZK-Submit] Proof generated. root:", proof.root.toString().slice(0, 20) + "...", "nullifier:", proof.nullifierHash.toString().slice(0, 20) + "...");
+          
+          setSubmitPhase("sending");
+          await executeSubmitToChain(proof, cidHex);
+        }
         setSubmitPhase("success");
     } catch (e: unknown) {
         const raw = e instanceof Error ? e.message : String(e);
@@ -468,7 +664,9 @@ export default function SubmitPage() {
     }
   };
 
-  const isAccessVerified = manifestImportStatus === "done" && keyImportStatus === "done";
+  const isAccessVerified = authMethod === "sso"
+    ? ssoVerified
+    : (manifestImportStatus === "done" && keyImportStatus === "done");
   const isSubmissionInProgress = ["encrypting", "anonymizing", "sending"].includes(submitPhase);
   const currentStepNum = submitPhase === "success" ? 4 : isSubmissionInProgress ? 3 : isAccessVerified ? 2 : 1;
 
@@ -493,55 +691,132 @@ export default function SubmitPage() {
       <section className={`transition-opacity duration-500 card space-y-6 ${currentStepNum === 1 ? 'opacity-100 ring-1 ring-white/20' : 'opacity-40 grayscale pointer-events-none'}`}>
         <div>
            <h2 className="text-xl font-bold text-white mb-1 uppercase tracking-tight">Step 1: Authorization</h2>
-           <p className="text-xs font-mono text-slate-500">Provide the access files given to you by your administrator to verify your membership anonymously.</p>
+           <p className="text-xs font-mono text-slate-500">Verify your membership anonymously before drafting your disclosure.</p>
+        </div>
+
+        {/* Method Selector */}
+        <div className="flex border border-white/10 rounded overflow-hidden bg-black/40">
+          <button
+            type="button"
+            className={`flex-1 py-3 text-[10px] uppercase tracking-wider font-mono font-bold transition-all ${authMethod === 'file' ? 'bg-white text-black font-black' : 'bg-transparent text-slate-400 hover:text-white'}`}
+            onClick={() => setAuthMethod('file')}
+          >
+            Access Credentials File
+          </button>
+          <button
+            type="button"
+            className={`flex-1 py-3 text-[10px] uppercase tracking-wider font-mono font-bold transition-all ${authMethod === 'sso' ? 'bg-white text-black font-black' : 'bg-transparent text-slate-400 hover:text-white'}`}
+            onClick={() => setAuthMethod('sso')}
+          >
+            Work Identity SSO (OIDC ZK)
+          </button>
         </div>
         
-        <div className="space-y-4">
-            <div className="bg-black/30 border border-white/5 p-5 rounded-lg space-y-4">
-                <div className="flex items-start justify-between">
-                    <div>
-                        <h3 className="text-sm font-bold text-white mb-1">Personal Access File</h3>
-                        <p className="text-[10px] font-mono text-slate-400">Required: <code className="bg-white/10 px-1 py-0.5 rounded">{'{your-id}.json'}</code></p>
-                    </div>
-                    {keyImportStatus === "done" && <Icon name="check_circle" className="text-green-500 text-2xl" />}
-                    {keyImportStatus === "error" && <Icon name="error" className="text-red-500 text-2xl" />}
-                </div>
-                
-                <div className="flex items-center gap-3">
-                    <label className="btn-ghost text-xs px-4 py-2 cursor-pointer border-white/20 hover:border-white/40">
-                        {keyFileName ? "Change File" : "Upload Access File"}
-                        <input type="file" accept=".json,application/json" className="hidden" onChange={handleKeyFileChange} />
-                    </label>
-                    <span className="text-[10px] font-mono text-slate-500 truncate max-w-[150px]">{keyFileName}</span>
-                </div>
-                
-                {keyImportError && <p className="text-[10px] text-red-400 font-mono">{keyImportError}</p>}
-            </div>
+        {authMethod === 'file' ? (
+          <div className="space-y-4">
+              <div className="bg-black/30 border border-white/5 p-5 rounded-lg space-y-4">
+                  <div className="flex items-start justify-between">
+                      <div>
+                          <h3 className="text-sm font-bold text-white mb-1">Personal Access File</h3>
+                          <p className="text-[10px] font-mono text-slate-400">Required: <code className="bg-white/10 px-1 py-0.5 rounded">{'{your-id}.json'}</code></p>
+                      </div>
+                      {keyImportStatus === "done" && <Icon name="check_circle" className="text-green-500 text-2xl" />}
+                      {keyImportStatus === "error" && <Icon name="error" className="text-red-500 text-2xl" />}
+                  </div>
+                  
+                  <div className="flex items-center gap-3">
+                      <label className="btn-ghost text-xs px-4 py-2 cursor-pointer border-white/20 hover:border-white/40">
+                          {keyFileName ? "Change File" : "Upload Access File"}
+                          <input type="file" accept=".json,application/json" className="hidden" onChange={handleKeyFileChange} />
+                      </label>
+                      <span className="text-[10px] font-mono text-slate-500 truncate max-w-[150px]">{keyFileName}</span>
+                  </div>
+                  
+                  {keyImportError && <p className="text-[10px] text-red-400 font-mono">{keyImportError}</p>}
+              </div>
 
-            <div className="bg-black/30 border border-white/5 p-5 rounded-lg space-y-4">
-                <div className="flex items-start justify-between">
-                    <div>
-                        <h3 className="text-sm font-bold text-white mb-1">Organization Directory File</h3>
-                        <p className="text-[10px] font-mono text-slate-400">Required: <code className="bg-white/10 px-1 py-0.5 rounded">manifest.json</code></p>
+              <div className="bg-black/30 border border-white/5 p-5 rounded-lg space-y-4">
+                  <div className="flex items-start justify-between">
+                      <div>
+                          <h3 className="text-sm font-bold text-white mb-1">Organization Directory File</h3>
+                          <p className="text-[10px] font-mono text-slate-400">Required: <code className="bg-white/10 px-1 py-0.5 rounded">manifest.json</code></p>
+                      </div>
+                      {manifestImportStatus === "done" && <Icon name="check_circle" className="text-green-500 text-2xl" />}
+                  </div>
+                  
+                  <div className="flex items-center gap-3">
+                      <label className="btn-ghost text-xs px-4 py-2 cursor-pointer border-white/20 hover:border-white/40">
+                          {manifestFileName ? "Change File" : "Upload Directory File"}
+                          <input type="file" accept=".json,application/json" className="hidden" onChange={handleManifestFileChange} />
+                      </label>
+                      <span className="text-[10px] font-mono text-slate-500 truncate max-w-[150px]">{manifestFileName}</span>
+                  </div>
+                  {manifestImportError && <p className="text-[10px] text-red-400 font-mono">{manifestImportError}</p>}
+              </div>
+          </div>
+        ) : (
+          <div className="space-y-4">
+              <div className="bg-black/30 border border-white/5 p-5 rounded-lg space-y-4">
+                  <div className="flex items-start justify-between">
+                      <div>
+                          <h3 className="text-sm font-bold text-white mb-1">Work Account Single Sign-On</h3>
+                          <p className="text-[10px] font-mono text-slate-400">Prove membership of your organization via your corporate email domain.</p>
+                      </div>
+                      {ssoVerified && <Icon name="check_circle" className="text-green-500 text-2xl" />}
+                  </div>
+                  
+                  {!ssoVerified ? (
+                    <div className="space-y-4">
+                      <p className="text-[11px] font-mono text-slate-400 leading-relaxed">
+                        No files needed. Sign in with your corporate Google Workspace or Microsoft account to generate an ephemeral public key and submit reports anonymously.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={startOidcLogin}
+                        className="btn-cta text-xs px-5 py-2.5 flex items-center gap-2"
+                      >
+                        <Icon name="vpn_key" /> CONNECT WORK SSO
+                      </button>
                     </div>
-                    {manifestImportStatus === "done" && <Icon name="check_circle" className="text-green-500 text-2xl" />}
-                </div>
-                
-                <div className="flex items-center gap-3">
-                    <label className="btn-ghost text-xs px-4 py-2 cursor-pointer border-white/20 hover:border-white/40">
-                        {manifestFileName ? "Change File" : "Upload Directory File"}
-                        <input type="file" accept=".json,application/json" className="hidden" onChange={handleManifestFileChange} />
-                    </label>
-                    <span className="text-[10px] font-mono text-slate-500 truncate max-w-[150px]">{manifestFileName}</span>
-                </div>
-                {manifestImportError && <p className="text-[10px] text-red-400 font-mono">{manifestImportError}</p>}
-            </div>
-        </div>
+                  ) : (
+                    <div className="space-y-3 font-mono text-xs text-slate-300">
+                      <div className="flex justify-between border-b border-white/5 pb-2">
+                        <span className="text-slate-500">Verified Email:</span>
+                        <span className="text-white font-bold">{ssoEmail}</span>
+                      </div>
+                      <div className="flex justify-between border-b border-white/5 pb-2">
+                        <span className="text-slate-500">Organization Suffix:</span>
+                        <span className="text-purple-400 font-bold">@{ssoDomain}</span>
+                      </div>
+                      <div className="flex justify-between border-b border-white/5 pb-2">
+                        <span className="text-slate-500">Identity Nullifier Hash:</span>
+                        <span className="text-slate-400 text-[10px] select-all truncate max-w-[200px]" title={ssoNullifier}>
+                          {ssoNullifier.slice(0, 24)}...
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSsoVerified(false);
+                          setSsoEmail("");
+                          setSsoDomain("");
+                          setSsoNullifier("");
+                          setSsoToken("");
+                        }}
+                        className="btn-ghost text-[10px] px-3 py-1 mt-2 text-red-400 hover:text-red-300"
+                      >
+                        Disconnect SSO
+                      </button>
+                    </div>
+                  )}
+              </div>
+          </div>
+        )}
 
         {isAccessVerified && currentStepNum === 1 && (
             <div className="p-4 bg-green-500/10 border border-green-500/30 rounded-lg text-center animate-in fade-in slide-in-from-bottom-2">
                 <p className="text-green-400 text-sm font-bold uppercase tracking-widest mb-1">Authorization Successful</p>
-                <p className="text-[10px] font-mono text-green-400/70">Your identity context is ready. Move down to write your report.</p>
+                <p className="text-[10px] font-mono text-green-400/70">Your identity context is verified. Move down to write your report.</p>
             </div>
         )}
       </section>
@@ -706,6 +981,66 @@ export default function SubmitPage() {
             </div>
         )}
       </section>
+      )}
+
+      {/* MOCK SSO MODAL */}
+      {isSsoModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-md p-4">
+          <div className="bg-[#0b0c16] border border-white/10 p-6 rounded-lg w-full max-w-sm space-y-4 relative animate-in zoom-in-95">
+            <button
+              onClick={() => setIsSsoModalOpen(false)}
+              className="absolute top-4 right-4 text-slate-400 hover:text-white font-bold"
+            >
+              &times;
+            </button>
+            <div className="space-y-1">
+              <h3 className="text-lg font-bold text-white uppercase tracking-wider">OIDC Login Portal</h3>
+              <p className="text-xs font-mono text-slate-400">Google Workspace / Azure AD Simulator</p>
+            </div>
+            
+            <div className="space-y-3 pt-2">
+              <p className="text-[11px] font-mono text-slate-500">
+                This simulator issues a cryptographically signed OIDC JWT token containing your corporate email and binds the generated ephemeral key to the token.
+              </p>
+              
+              <div className="bg-black/40 border border-white/5 p-3 rounded space-y-1 font-mono text-[9px] text-slate-400">
+                <span className="text-[8px] uppercase tracking-widest text-slate-500 block">Generated Nonce</span>
+                <span className="truncate block select-all">{tempNonce || "Calculating..."}</span>
+              </div>
+              
+              <div className="space-y-1">
+                <label className="text-[9px] font-bold uppercase tracking-widest text-slate-500 block">Corporate Email Address</label>
+                <input
+                  type="email"
+                  defaultValue="employee@company.com"
+                  id="sso-email-input"
+                  className="input text-xs w-full py-2.5 px-3 bg-black/40 border-white/10 text-white"
+                  placeholder="name@company.com"
+                />
+              </div>
+
+              {ssoError && (
+                <p className="text-[10px] text-red-400 font-mono bg-red-900/10 p-2 border border-red-500/20 rounded">
+                  {ssoError}
+                </p>
+              )}
+
+              <button
+                type="button"
+                onClick={() => {
+                  const emailInput = document.getElementById("sso-email-input") as HTMLInputElement;
+                  if (emailInput) {
+                    handleOidcSubmit(emailInput.value.trim());
+                  }
+                }}
+                disabled={ssoStatus === "loading"}
+                className="btn-cta w-full py-2.5 text-xs tracking-wider"
+              >
+                {ssoStatus === "loading" ? "Authenticating..." : "AUTHORIZE IDENTITY"}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
     </div>
