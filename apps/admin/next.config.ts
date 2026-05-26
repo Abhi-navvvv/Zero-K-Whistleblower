@@ -1,8 +1,17 @@
 import type { NextConfig } from "next";
 import path from "path";
 
+const resolvedUploadKey =
+  process.env.NEXT_PUBLIC_UPLOAD_API_KEY?.trim() ||
+  process.env.UPLOAD_API_KEY?.trim();
+
 const nextConfig: NextConfig = {
   outputFileTracingRoot: path.join(__dirname, "../.."),
+  env: resolvedUploadKey
+    ? {
+      NEXT_PUBLIC_UPLOAD_API_KEY: resolvedUploadKey,
+    }
+    : undefined,
   outputFileTracingIncludes: {
     "/*": [
       "../../node_modules/.pnpm/@prisma+client@*/node_modules/.prisma/client/**",

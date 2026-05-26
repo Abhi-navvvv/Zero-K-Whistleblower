@@ -8,14 +8,20 @@ const bundledPublicKey = existsSync(bundledPublicKeyPath)
   : "";
 const resolvedPublicKey =
   process.env.NEXT_PUBLIC_REPORT_RSA_PUBLIC_KEY_B64?.trim() || bundledPublicKey;
+const resolvedUploadKey =
+  process.env.NEXT_PUBLIC_UPLOAD_API_KEY?.trim() ||
+  process.env.UPLOAD_API_KEY?.trim();
 
 const nextConfig: NextConfig = {
   outputFileTracingRoot: path.join(__dirname, "../.."),
-  env: resolvedPublicKey
-    ? {
-      NEXT_PUBLIC_REPORT_RSA_PUBLIC_KEY_B64: resolvedPublicKey,
-    }
-    : undefined,
+  env: {
+    ...(resolvedPublicKey
+      ? { NEXT_PUBLIC_REPORT_RSA_PUBLIC_KEY_B64: resolvedPublicKey }
+      : {}),
+    ...(resolvedUploadKey
+      ? { NEXT_PUBLIC_UPLOAD_API_KEY: resolvedUploadKey }
+      : {}),
+  },
   experimental: {
     optimizePackageImports: [
       "@zk-whistleblower/shared",
