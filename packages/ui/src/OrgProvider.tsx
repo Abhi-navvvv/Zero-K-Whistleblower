@@ -10,6 +10,7 @@ interface OrgContextValue {
   knownOrgIds: number[];
   setSelectedOrgId: (orgId: number) => void;
   rememberOrgId: (orgId: number) => void;
+  orgNames: Record<number, string>;
 }
 
 const ORG_STORAGE_SCOPE = `${(process.env.NEXT_PUBLIC_NETWORK_NAME ?? "local").toLowerCase()}:${(process.env.NEXT_PUBLIC_REGISTRY_ADDRESS ?? "0x0000000000000000000000000000000000000000").toLowerCase()}`;
@@ -73,9 +74,43 @@ async function filterExistingOrgIds(ids: number[]): Promise<number[]> {
   return normalizeOrgIdList([0, ...existing]);
 }
 
+async function fetchOrgNames(ids: number[]): Promise<Record<number, string>> {
+  const nameMap: Record<number, string> = { 0: "Default Organization" };
+  const candidates = ids.filter((id) => id !== 0);
+  if (candidates.length === 0) return nameMap;
+
+  const results = await Promise.allSettled(
+    candidates.map((orgId) =>
+      appPublicClient.readContract({
+        address: REGISTRY_ADDRESS,
+        abi: REGISTRY_ABI,
+        functionName: "getOrganization",
+        args: [BigInt(orgId)],
+      })
+    )
+  );
+
+  results.forEach((res, idx) => {
+    const orgId = candidates[idx];
+    if (res.status === "fulfilled") {
+      const val = res.value as { name: string; active: boolean; createdAt: bigint };
+      if (val && val.name) {
+        nameMap[orgId] = val.name;
+      } else {
+        nameMap[orgId] = `Organization ${orgId}`;
+      }
+    } else {
+      nameMap[orgId] = `Organization ${orgId}`;
+    }
+  });
+
+  return nameMap;
+}
+
 export function OrgProvider({ children }: { children: React.ReactNode }) {
   const [selectedOrgId, setSelectedOrgIdState] = useState(0);
   const [knownOrgIds, setKnownOrgIds] = useState<number[]>([0]);
+  const [orgNames, setOrgNames] = useState<Record<number, string>>({ 0: "Default Organization" });
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -104,9 +139,13 @@ export function OrgProvider({ children }: { children: React.ReactNode }) {
       const validatedKnown = await filterExistingOrgIds(parsedKnown);
       if (canceled) return;
 
+      const names = await fetchOrgNames(validatedKnown);
+      if (canceled) return;
+
       const validatedSelected = validatedKnown.includes(selected) ? selected : 0;
       setSelectedOrgIdState(validatedSelected);
       setKnownOrgIds(validatedKnown);
+      setOrgNames(names);
       window.localStorage.setItem(ORG_SELECTED_KEY, String(validatedSelected));
       window.localStorage.setItem(ORG_KNOWN_KEY, JSON.stringify(validatedKnown));
     })();
@@ -124,6 +163,24 @@ export function OrgProvider({ children }: { children: React.ReactNode }) {
       if (typeof window !== "undefined") {
         window.localStorage.setItem(ORG_KNOWN_KEY, JSON.stringify(next));
       }
+
+      // Fetch name asynchronously
+      void (async () => {
+        try {
+          const res = await appPublicClient.readContract({
+            address: REGISTRY_ADDRESS,
+            abi: REGISTRY_ABI,
+            functionName: "getOrganization",
+            args: [BigInt(normalized)],
+          }) as { name: string; active: boolean; createdAt: bigint };
+          if (res && res.name) {
+            setOrgNames((prevNames) => ({ ...prevNames, [normalized]: res.name }));
+          }
+        } catch {
+          setOrgNames((prevNames) => ({ ...prevNames, [normalized]: `Organization ${normalized}` }));
+        }
+      })();
+
       return next;
     });
   }, []);
@@ -141,8 +198,8 @@ export function OrgProvider({ children }: { children: React.ReactNode }) {
   );
 
   const value = useMemo<OrgContextValue>(
-    () => ({ selectedOrgId, knownOrgIds, setSelectedOrgId, rememberOrgId }),
-    [selectedOrgId, knownOrgIds, setSelectedOrgId, rememberOrgId]
+    () => ({ selectedOrgId, knownOrgIds, setSelectedOrgId, rememberOrgId, orgNames }),
+    [selectedOrgId, knownOrgIds, setSelectedOrgId, rememberOrgId, orgNames]
   );
 
   return <OrgContext.Provider value={value}>{children}</OrgContext.Provider>;
