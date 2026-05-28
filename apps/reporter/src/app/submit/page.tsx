@@ -211,6 +211,56 @@ export default function SubmitPage() {
     setExternalNullifier(epoch.toString());
   }, []);
 
+  useEffect(() => {
+    if (typeof window !== "undefined" && window.location.hash) {
+      const hash = window.location.hash.substring(1);
+      const params = new URLSearchParams(hash);
+      const idToken = params.get("id_token");
+      const state = params.get("state");
+      if (idToken && state === "sso") {
+        window.history.replaceState(null, "", window.location.pathname);
+        handleOidcCallback(idToken);
+      }
+    }
+  }, []);
+
+  const processOidcToken = async (idToken: string, jwksUri: string, expectedNonce: string, privKeyJwk: string) => {
+    // 1. Verify JWT
+    const verifiedData = await verifyOidcJwtLocal(idToken, jwksUri);
+    
+    // 2. Verify Nonce
+    if (verifiedData.nonce !== expectedNonce) {
+      throw new Error(`Nonce mismatch: OIDC token binding signature invalid.`);
+    }
+
+    // 3. Enforce Allowed Domain Verification Check
+    const allowedDomain = process.env.NEXT_PUBLIC_ALLOWED_OIDC_DOMAIN || "bennett.edu.in";
+    if (allowedDomain && verifiedData.domain !== allowedDomain) {
+      throw new Error(`Domain mismatch: Only @${allowedDomain} accounts are authorized to submit disclosures.`);
+    }
+
+    // 4. Generate secure nullifier
+    const sub = verifiedData.sub;
+    const salt = localStorage.getItem("oidc_salt") || (() => {
+      const newSalt = Math.floor(Math.random() * 1000000).toString();
+      localStorage.setItem("oidc_salt", newSalt);
+      return newSalt;
+    })();
+    const inputBuffer = new TextEncoder().encode(sub + salt);
+    const hashBuffer = await window.crypto.subtle.digest("SHA-256", inputBuffer);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    const nullifierHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+
+    // 5. Update state variables
+    setSsoEmail(verifiedData.email);
+    setSsoDomain(verifiedData.domain);
+    setSsoToken(idToken);
+    setSsoNullifier(nullifierHex);
+    setEphemeralPrivateKey(privKeyJwk);
+    setSsoVerified(true);
+    setSsoStatus("done");
+  };
+
   const startOidcLogin = async () => {
     setSsoStatus("loading");
     setSsoError("");
@@ -248,6 +298,44 @@ export default function SubmitPage() {
     }
   };
 
+  const startRealGoogleLogin = async () => {
+    setSsoStatus("loading");
+    setSsoError("");
+    try {
+      const keypair = await window.crypto.subtle.generateKey(
+        {
+          name: "ECDSA",
+          namedCurve: "P-256",
+        },
+        true,
+        ["sign", "verify"]
+      );
+
+      const exportedPubKey = await window.crypto.subtle.exportKey("jwk", keypair.publicKey);
+      const pubKeyString = JSON.stringify(exportedPubKey);
+      const pubKeyBuffer = new TextEncoder().encode(pubKeyString);
+      const hashBuffer = await window.crypto.subtle.digest("SHA-256", pubKeyBuffer);
+      const nonceHex = Array.from(new Uint8Array(hashBuffer))
+        .map(b => b.toString(16).padStart(2, "0"))
+        .join("");
+
+      const exportedPrivKey = await window.crypto.subtle.exportKey("jwk", keypair.privateKey);
+      
+      // Save to session storage across redirect
+      sessionStorage.setItem("oidc_nonce", nonceHex);
+      sessionStorage.setItem("oidc_ephemeral_priv", JSON.stringify(exportedPrivKey));
+
+      const clientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID || "";
+      const redirectUri = encodeURIComponent(`${window.location.origin}/submit`);
+      const googleAuthUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&redirect_uri=${redirectUri}&response_type=id_token&scope=openid%20email&nonce=${nonceHex}&state=sso`;
+      
+      window.location.href = googleAuthUrl;
+    } catch (err: unknown) {
+      setSsoStatus("error");
+      setSsoError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
   const handleOidcSubmit = async (email: string) => {
     setSsoStatus("loading");
     setSsoError("");
@@ -263,34 +351,42 @@ export default function SubmitPage() {
         throw new Error(data.error || "OIDC Provider Authentication Failed");
       }
 
-      // Verify JWT
-      const verifiedData = await verifyOidcJwtLocal(data.id_token, data.jwks_uri);
+      await processOidcToken(data.id_token, data.jwks_uri, tempNonce, ephemeralPrivateKey);
+      setIsSsoModalOpen(false);
+    } catch (err: unknown) {
+      setSsoStatus("error");
+      setSsoError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const handleOidcCallback = async (idToken: string) => {
+    setAuthMethod("sso");
+    setSsoStatus("loading");
+    setSsoError("");
+    try {
+      const parts = idToken.split(".");
+      if (parts.length !== 3) {
+        throw new Error("Invalid JWT token format");
+      }
+      const payload = JSON.parse(atob(parts[1]));
+      const iss = payload.iss || "";
       
-      // Verify Nonce matches
-      if (verifiedData.nonce !== tempNonce) {
-        throw new Error("Nonce mismatch: OIDC token binding signature invalid");
+      const isGoogle = iss.includes("accounts.google.com");
+      const jwksUri = isGoogle 
+        ? "https://www.googleapis.com/oauth2/v3/certs"
+        : "/api/mock-oidc";
+
+      const storedNonce = sessionStorage.getItem("oidc_nonce") || "";
+      const storedPriv = sessionStorage.getItem("oidc_ephemeral_priv") || "";
+
+      if (!storedNonce || !storedPriv) {
+        throw new Error("Local session keys expired or missing. Please try signing in again.");
       }
 
-      // Generate secure nullifier
-      const sub = verifiedData.sub;
-      const salt = localStorage.getItem("oidc_salt") || (() => {
-        const newSalt = Math.floor(Math.random() * 1000000).toString();
-        localStorage.setItem("oidc_salt", newSalt);
-        return newSalt;
-      })();
-      const inputBuffer = new TextEncoder().encode(sub + salt);
-      const hashBuffer = await window.crypto.subtle.digest("SHA-256", inputBuffer);
-      const hashArray = Array.from(new Uint8Array(hashBuffer));
-      const nullifierHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-
-      // Update states
-      setSsoEmail(verifiedData.email);
-      setSsoDomain(verifiedData.domain);
-      setSsoToken(data.id_token);
-      setSsoNullifier(nullifierHex);
-      setSsoVerified(true);
-      setSsoStatus("done");
-      setIsSsoModalOpen(false);
+      await processOidcToken(idToken, jwksUri, storedNonce, storedPriv);
+      
+      sessionStorage.removeItem("oidc_nonce");
+      sessionStorage.removeItem("oidc_ephemeral_priv");
     } catch (err: unknown) {
       setSsoStatus("error");
       setSsoError(err instanceof Error ? err.message : String(err));
@@ -768,15 +864,46 @@ export default function SubmitPage() {
                   {!ssoVerified ? (
                     <div className="space-y-4">
                       <p className="text-[11px] font-mono text-slate-400 leading-relaxed">
-                        No files needed. Sign in with your corporate Google Workspace or Microsoft account to generate an ephemeral public key and submit reports anonymously.
+                        Verify your membership via zero-knowledge OIDC verification using either your Google Workspace account or the local OIDC Simulator.
                       </p>
-                      <button
-                        type="button"
-                        onClick={startOidcLogin}
-                        className="btn-cta text-xs px-5 py-2.5 flex items-center gap-2"
-                      >
-                        <Icon name="vpn_key" /> CONNECT WORK SSO
-                      </button>
+                      
+                      {ssoStatus === "loading" && (
+                        <div className="flex items-center gap-2 text-xs font-mono text-slate-400">
+                          <Icon name="autorenew" className="animate-spin text-purple-400" />
+                          <span>Generating keys and contacting Identity Provider...</span>
+                        </div>
+                      )}
+                      
+                      {ssoError && (
+                        <p className="text-[10px] text-red-400 font-mono border border-red-900/50 bg-red-950/20 p-2 rounded">
+                          ⚠️ {ssoError}
+                        </p>
+                      )}
+
+                      <div className="flex flex-col sm:flex-row gap-3 pt-2">
+                        <button
+                          type="button"
+                          disabled={!process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID}
+                          onClick={startRealGoogleLogin}
+                          className={`btn-cta text-xs px-5 py-2.5 flex items-center justify-center gap-2 ${!process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ? 'opacity-40 cursor-not-allowed border-white/10 hover:bg-transparent' : ''}`}
+                          title={!process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ? "Set NEXT_PUBLIC_GOOGLE_CLIENT_ID in apps/reporter/.env.local to enable real login." : "Connect via your official Google Workspace account."}
+                        >
+                          <Icon name="login" /> SIGN IN WITH GOOGLE
+                        </button>
+                        <button
+                          type="button"
+                          onClick={startOidcLogin}
+                          className="btn-ghost text-xs px-5 py-2.5 flex items-center justify-center gap-2 border-white/20 hover:border-white/40"
+                        >
+                          <Icon name="autorenew" /> RUN SSO SIMULATOR
+                        </button>
+                      </div>
+                      
+                      {!process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID && (
+                        <p className="text-[9px] font-mono text-yellow-500/80 leading-normal">
+                          ℹ️ Real Google OIDC authentication is disabled because <code>NEXT_PUBLIC_GOOGLE_CLIENT_ID</code> is not configured. Use the local <strong>SSO Simulator</strong> to test the verification pipeline.
+                        </p>
+                      )}
                     </div>
                   ) : (
                     <div className="space-y-3 font-mono text-xs text-slate-300">
