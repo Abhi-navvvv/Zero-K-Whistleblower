@@ -156,7 +156,8 @@ function WizardStep({
 }
 
 export default function SubmitPage() {
-  const { selectedOrgId } = useOrg();
+  const { selectedOrgId, orgNames } = useOrg();
+  const orgName = orgNames?.[selectedOrgId] || `Organization ${selectedOrgId}`;
 
   // Step 1: Access Credentials
   const [keyFileJson, setKeyFileJson] = useState("");
@@ -298,7 +299,7 @@ export default function SubmitPage() {
     }
   };
 
-  const startRealGoogleLogin = async () => {
+  const startRealMicrosoftLogin = async () => {
     setSsoStatus("loading");
     setSsoError("");
     try {
@@ -325,11 +326,12 @@ export default function SubmitPage() {
       sessionStorage.setItem("oidc_nonce", nonceHex);
       sessionStorage.setItem("oidc_ephemeral_priv", JSON.stringify(exportedPrivKey));
 
-      const clientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID || "";
+      const clientId = process.env.NEXT_PUBLIC_AZURE_CLIENT_ID || "";
+      const tenantId = process.env.NEXT_PUBLIC_AZURE_TENANT_ID || "common";
       const redirectUri = encodeURIComponent(`${window.location.origin}/submit`);
-      const googleAuthUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&redirect_uri=${redirectUri}&response_type=id_token&scope=openid%20email&nonce=${nonceHex}&state=sso`;
+      const microsoftAuthUrl = `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/authorize?client_id=${clientId}&redirect_uri=${redirectUri}&response_type=id_token&scope=openid%20email%20profile&response_mode=fragment&nonce=${nonceHex}&state=sso`;
       
-      window.location.href = googleAuthUrl;
+      window.location.href = microsoftAuthUrl;
     } catch (err: unknown) {
       setSsoStatus("error");
       setSsoError(err instanceof Error ? err.message : String(err));
@@ -371,10 +373,13 @@ export default function SubmitPage() {
       const payload = JSON.parse(atob(parts[1]));
       const iss = payload.iss || "";
       
+      const isMicrosoft = iss.includes("login.microsoftonline.com") || iss.includes("sts.windows.net");
       const isGoogle = iss.includes("accounts.google.com");
-      const jwksUri = isGoogle 
-        ? "https://www.googleapis.com/oauth2/v3/certs"
-        : "/api/mock-oidc";
+      const jwksUri = isMicrosoft 
+        ? "https://login.microsoftonline.com/common/discovery/v2.0/keys"
+        : isGoogle
+          ? "https://www.googleapis.com/oauth2/v3/certs"
+          : "/api/mock-oidc";
 
       const storedNonce = sessionStorage.getItem("oidc_nonce") || "";
       const storedPriv = sessionStorage.getItem("oidc_ephemeral_priv") || "";
@@ -773,7 +778,7 @@ export default function SubmitPage() {
           Secure Disclosure
         </h1>
         <p className="text-slate-400 text-sm font-mono max-w-md mx-auto leading-relaxed">
-          Report wrongdoing to <strong className="text-white">Organization {selectedOrgId}</strong> with absolute anonymity. Your identity is cryptographically hidden and mathematically impossible to trace.
+          Report wrongdoing to <strong className="text-white">{orgName}</strong> with absolute anonymity. Your identity is cryptographically hidden and mathematically impossible to trace.
         </p>
       </div>
 
@@ -883,12 +888,12 @@ export default function SubmitPage() {
                       <div className="flex flex-col sm:flex-row gap-3 pt-2">
                         <button
                           type="button"
-                          disabled={!process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID}
-                          onClick={startRealGoogleLogin}
-                          className={`btn-cta text-xs px-5 py-2.5 flex items-center justify-center gap-2 ${!process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ? 'opacity-40 cursor-not-allowed border-white/10 hover:bg-transparent' : ''}`}
-                          title={!process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ? "Set NEXT_PUBLIC_GOOGLE_CLIENT_ID in apps/reporter/.env.local to enable real login." : "Connect via your official Google Workspace account."}
+                          disabled={!process.env.NEXT_PUBLIC_AZURE_CLIENT_ID}
+                          onClick={startRealMicrosoftLogin}
+                          className={`btn-cta text-xs px-5 py-2.5 flex items-center justify-center gap-2 ${!process.env.NEXT_PUBLIC_AZURE_CLIENT_ID ? 'opacity-40 cursor-not-allowed border-white/10 hover:bg-transparent' : ''}`}
+                          title={!process.env.NEXT_PUBLIC_AZURE_CLIENT_ID ? "Set NEXT_PUBLIC_AZURE_CLIENT_ID in apps/reporter/.env.local to enable real login." : "Connect via your official Microsoft email account."}
                         >
-                          <Icon name="login" /> SIGN IN WITH GOOGLE
+                          <Icon name="login" /> SIGN IN WITH MICROSOFT
                         </button>
                         <button
                           type="button"
@@ -899,9 +904,9 @@ export default function SubmitPage() {
                         </button>
                       </div>
                       
-                      {!process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID && (
+                      {!process.env.NEXT_PUBLIC_AZURE_CLIENT_ID && (
                         <p className="text-[9px] font-mono text-yellow-500/80 leading-normal">
-                          ℹ️ Real Google OIDC authentication is disabled because <code>NEXT_PUBLIC_GOOGLE_CLIENT_ID</code> is not configured. Use the local <strong>SSO Simulator</strong> to test the verification pipeline.
+                          ℹ️ Real Microsoft OIDC authentication is disabled because <code>NEXT_PUBLIC_AZURE_CLIENT_ID</code> is not configured. Use the local <strong>SSO Simulator</strong> to test the verification pipeline.
                         </p>
                       )}
                     </div>

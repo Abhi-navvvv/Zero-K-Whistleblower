@@ -17,7 +17,7 @@ const DEFAULT_NAV_ITEMS: NavItem[] = [
 
 export default function Sidebar({ navItems = DEFAULT_NAV_ITEMS }: { navItems?: NavItem[] }) {
   const pathname = usePathname();
-  const { selectedOrgId, knownOrgIds, setSelectedOrgId } = useOrg();
+  const { selectedOrgId, knownOrgIds, setSelectedOrgId, orgNames } = useOrg();
 
   const networkName = process.env.NEXT_PUBLIC_NETWORK_NAME?.toLowerCase();
   const networkLabel =
@@ -41,7 +41,7 @@ export default function Sidebar({ navItems = DEFAULT_NAV_ITEMS }: { navItems?: N
           >
             {knownOrgIds.map((orgId) => (
               <option key={orgId} value={orgId}>
-                Org {orgId}
+                {orgNames?.[orgId] || `Org ${orgId}`}
               </option>
             ))}
           </select>
