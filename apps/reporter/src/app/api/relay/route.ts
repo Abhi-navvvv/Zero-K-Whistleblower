@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createPublicClient, createWalletClient, http } from "viem";
+import { createPublicClient, createWalletClient, http, encodePacked, keccak256, toHex, hexToBigInt, toBytes } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { hardhat, sepolia } from "viem/chains";
 import { REGISTRY_ABI, REGISTRY_ADDRESS } from "@zk-whistleblower/shared/src/contracts";
 import { timingSafeEqual } from "crypto";
+import * as jose from "jose";
 
 export const runtime = "nodejs";
 
@@ -29,7 +30,8 @@ type RelayAction =
     | "grantOrgAdmin"
     | "revokeOrgAdmin"
     | "submitReport"
-    | "submitReportForOrg";
+    | "submitReportForOrg"
+    | "submitReportWithOidc";
 
 function asBigInt(value: unknown, field: string): bigint {
     if (typeof value !== "string" || !value.trim()) {
@@ -101,7 +103,7 @@ export async function POST(req: NextRequest) {
         // --- Tiered authorization ---
         // Report submission is allowed without API key (anonymous reporter flow).
         // All privileged admin actions require RELAY_API_KEY and fail-closed.
-        const isPublicAction = body.action === "submitReport" || body.action === "submitReportForOrg";
+        const isPublicAction = body.action === "submitReport" || body.action === "submitReportForOrg" || body.action === "submitReportWithOidc";
         if (!isPublicAction) {
             const expectedKey = process.env.RELAY_API_KEY;
             if (!expectedKey) {
@@ -228,6 +230,88 @@ export async function POST(req: NextRequest) {
                 args: [
                     asBigInt(body.payload.orgId, "orgId"),
                     asAddress(body.payload.account, "account"),
+                ],
+                account,
+            });
+        } else if (body.action === "submitReportWithOidc") {
+            await ensureOrganizationApisAvailable(publicClient);
+            const idToken = body.payload.idToken;
+            const jwksUri = body.payload.jwksUri;
+            const orgId = body.payload.orgId;
+            const category = body.payload.category;
+            const encryptedCIDHex = body.payload.encryptedCIDHex;
+
+            if (typeof idToken !== "string" || !idToken.trim()) {
+                return NextResponse.json({ error: "Missing or invalid idToken" }, { status: 400 });
+            }
+            if (typeof jwksUri !== "string" || !jwksUri.trim()) {
+                return NextResponse.json({ error: "Missing or invalid jwksUri" }, { status: 400 });
+            }
+            if (orgId === undefined || orgId === null) {
+                return NextResponse.json({ error: "Missing orgId" }, { status: 400 });
+            }
+            if (typeof category !== "number" || category < 0 || category > 3) {
+                return NextResponse.json({ error: "Invalid category" }, { status: 400 });
+            }
+            if (typeof encryptedCIDHex !== "string" || !/^0x[0-9a-fA-F]*$/.test(encryptedCIDHex)) {
+                return NextResponse.json({ error: "Invalid encryptedCIDHex" }, { status: 400 });
+            }
+
+            // 1. Resolve absolute JWKS URI
+            let absoluteJwksUri = jwksUri;
+            if (jwksUri.startsWith("/")) {
+                const origin = req.nextUrl.origin || `http://${req.headers.get("host") || "localhost:3001"}`;
+                absoluteJwksUri = `${origin}${jwksUri}`;
+            }
+
+            // 2. Cryptographically verify OIDC ID token
+            let email: string;
+            try {
+                const JWKS = jose.createRemoteJWKSet(new URL(absoluteJwksUri));
+                const { payload } = await jose.jwtVerify(idToken, JWKS);
+                email = (payload.email as string) || "";
+            } catch (err: unknown) {
+                return NextResponse.json({ error: `OIDC verification failed: ${err instanceof Error ? err.message : String(err)}` }, { status: 401 });
+            }
+
+            const domain = email.split("@")[1] || "";
+            if (!email || !domain) {
+                return NextResponse.json({ error: "OIDC token missing email claim" }, { status: 400 });
+            }
+
+            // 3. Verify domain constraint
+            const allowedDomain = process.env.NEXT_PUBLIC_ALLOWED_OIDC_DOMAIN || "bennett.edu.in";
+            if (allowedDomain && domain !== allowedDomain) {
+                return NextResponse.json({ error: `Domain mismatch: Only @${allowedDomain} accounts are authorized` }, { status: 403 });
+            }
+
+            // 4. Derive private nullifier hash
+            const relayerSalt = process.env.RELAYER_SALT || "default-relayer-salt-change-me";
+            const inputStr = `${email}:${relayerSalt}`;
+            const nullifierHash = hexToBigInt(keccak256(toHex(inputStr)));
+
+            // 5. Generate Relayer/Authority Signature
+            const messageHash = keccak256(
+                encodePacked(
+                    ["uint256", "uint256", "bytes", "uint8"],
+                    [asBigInt(orgId, "orgId"), nullifierHash, encryptedCIDHex as `0x${string}`, Number(category)]
+                )
+            );
+            const signature = await account.signMessage({
+                message: { raw: toBytes(messageHash) }
+            });
+
+            // 6. Submit transaction on-chain
+            txHash = await walletClient.writeContract({
+                address: REGISTRY_ADDRESS,
+                abi: REGISTRY_ABI,
+                functionName: "submitReportWithOidc",
+                args: [
+                    asBigInt(orgId, "orgId"),
+                    nullifierHash,
+                    encryptedCIDHex as `0x${string}`,
+                    Number(category),
+                    signature
                 ],
                 account,
             });

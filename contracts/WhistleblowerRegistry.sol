@@ -19,6 +19,7 @@ contract WhistleblowerRegistry is AccessControl {
     using MessageHashUtils for bytes32;
     uint256 public constant DEFAULT_ORG_ID = 0;
     bytes32 public constant SUPER_ADMIN_ROLE = DEFAULT_ADMIN_ROLE;
+    bytes32 public constant OIDC_AUTHORITY_ROLE = keccak256("OIDC_AUTHORITY_ROLE");
 
     error UnknownMerkleRoot();
     error NullifierAlreadyUsed();
@@ -45,6 +46,7 @@ contract WhistleblowerRegistry is AccessControl {
     error MemberOnboardingCooldownActive();
     error ConsensusMinimumAdminsNotMet();
     error SuspiciousVotingPattern();
+    error UnauthorizedOidcAuthority();
 
     IGroth16Verifier public immutable verifier;
 
@@ -188,6 +190,7 @@ contract WhistleblowerRegistry is AccessControl {
 
     constructor(address _verifier) {
         _grantRole(SUPER_ADMIN_ROLE, msg.sender);
+        _grantRole(OIDC_AUTHORITY_ROLE, msg.sender);
 
         verifier = IGroth16Verifier(_verifier);
         pauseGuardian = msg.sender;
@@ -406,6 +409,61 @@ contract WhistleblowerRegistry is AccessControl {
             Report({
                 nullifierHash: _nullifierHash,
                 merkleRoot: _root,
+                timestamp: block.timestamp,
+                category: _category,
+                encryptedCID: _encryptedCID
+            })
+        );
+        reportOrgId[reportId] = _orgId;
+        orgReportIds[_orgId].push(reportId);
+
+        emit ReportSubmitted(
+            reportId,
+            _nullifierHash,
+            _encryptedCID,
+            _category,
+            block.timestamp
+        );
+        emit ReportSubmittedForOrg(
+            reportId,
+            _orgId,
+            _nullifierHash,
+            _encryptedCID,
+            _category,
+            block.timestamp
+        );
+    }
+
+    function submitReportWithOidc(
+        uint256 _orgId,
+        uint256 _nullifierHash,
+        bytes calldata _encryptedCID,
+        uint8 _category,
+        bytes calldata _authoritySignature
+    ) external whenNotPaused {
+        if (!organizationExists[_orgId]) revert OrganizationDoesNotExist();
+        if (!organizations[_orgId].active) revert OrganizationInactive();
+        if (orgUsedNullifiers[_orgId][_nullifierHash]) revert NullifierAlreadyUsed();
+        if (_category > 3) revert InvalidCategory();
+
+        bytes32 messageHash = keccak256(abi.encodePacked(_orgId, _nullifierHash, _encryptedCID, _category));
+        bytes32 ethSignedMessageHash = messageHash.toEthSignedMessageHash();
+        
+        address recoveredSigner = ethSignedMessageHash.recover(_authoritySignature);
+        if (!hasRole(OIDC_AUTHORITY_ROLE, recoveredSigner)) {
+            revert UnauthorizedOidcAuthority();
+        }
+
+        orgUsedNullifiers[_orgId][_nullifierHash] = true;
+        if (_orgId == DEFAULT_ORG_ID) {
+            usedNullifiers[_nullifierHash] = true;
+        }
+
+        uint256 reportId = reports.length;
+        reports.push(
+            Report({
+                nullifierHash: _nullifierHash,
+                merkleRoot: 0,
                 timestamp: block.timestamp,
                 category: _category,
                 encryptedCID: _encryptedCID

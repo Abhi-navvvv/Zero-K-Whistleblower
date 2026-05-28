@@ -40,6 +40,16 @@ type RelayRequest =
             encryptedCIDHex: `0x${string}`;
             category: number;
         };
+    }
+    | {
+        action: "submitReportWithOidc";
+        payload: {
+            idToken: string;
+            jwksUri: string;
+            orgId: string;
+            category: number;
+            encryptedCIDHex: `0x${string}`;
+        };
     };
 
 /**
@@ -132,4 +142,10 @@ export function relaySubmitReportForOrg(
     payload: Extract<RelayRequest, { action: "submitReportForOrg" }>['payload']
 ) {
     return relayTx({ action: "submitReportForOrg", payload });
+}
+
+export function relaySubmitReportWithOidc(
+    payload: Extract<RelayRequest, { action: "submitReportWithOidc" }>['payload']
+) {
+    return relayTx({ action: "submitReportWithOidc", payload });
 }

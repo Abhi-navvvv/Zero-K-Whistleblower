@@ -5,7 +5,7 @@ import { Icon } from "@zk-whistleblower/ui";
 import { createPublicClient, http } from "viem";
 import { hardhat, sepolia } from "viem/chains";
 import { REGISTRY_ABI, REGISTRY_ADDRESS, CATEGORIES } from "@zk-whistleblower/shared/src/contracts";
-import { relaySubmitReport, relaySubmitReportForOrg, relayAddRootForOrg } from "@zk-whistleblower/shared/src/relayer";
+import { relaySubmitReport, relaySubmitReportForOrg, relayAddRootForOrg, relaySubmitReportWithOidc } from "@zk-whistleblower/shared/src/relayer";
 import { initPoseidon, poseidonHash } from "@zk-whistleblower/shared/src/poseidon";
 import { buildMerkleTree } from "@zk-whistleblower/shared/src/merkle";
 import { generateZKProof, type FormattedProof } from "@zk-whistleblower/shared/src/zkProof";
@@ -177,6 +177,7 @@ export default function SubmitPage() {
   const [ssoEmail, setSsoEmail] = useState("");
   const [ssoDomain, setSsoDomain] = useState("");
   const [ssoToken, setSsoToken] = useState("");
+  const [ssoJwksUri, setSsoJwksUri] = useState("");
   const [ssoVerified, setSsoVerified] = useState(false);
   const [ssoStatus, setSsoStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
   const [ssoError, setSsoError] = useState("");
@@ -256,6 +257,7 @@ export default function SubmitPage() {
     setSsoEmail(verifiedData.email);
     setSsoDomain(verifiedData.domain);
     setSsoToken(idToken);
+    setSsoJwksUri(jwksUri);
     setSsoNullifier(nullifierHex);
     setEphemeralPrivateKey(privKeyJwk);
     setSsoVerified(true);
@@ -736,16 +738,19 @@ export default function SubmitPage() {
         
         setSubmitPhase("anonymizing");
         if (authMethod === "sso") {
-          setSubmitProgress("Generating Ephemeral OIDC ZK Proof...");
-          await new Promise((resolve) => setTimeout(resolve, 1500));
+          setSubmitProgress("Validating OIDC Session...");
+          await new Promise((resolve) => setTimeout(resolve, 500));
           
           setSubmitPhase("sending");
           setSubmitProgress("Dispatching transaction to relay...");
-          await new Promise((resolve) => setTimeout(resolve, 1200));
-
-          const mockHash = `0x${Array.from(window.crypto.getRandomValues(new Uint8Array(32))).map(b => b.toString(16).padStart(2, '0')).join('')}` as `0x${string}`;
-          setSubmittedTxHash(mockHash);
-          setSubmitPhase("success");
+          const res = await relaySubmitReportWithOidc({
+              idToken: ssoToken,
+              jwksUri: ssoJwksUri,
+              orgId: String(selectedOrgId),
+              category: Number(category),
+              encryptedCIDHex: cidHex
+          });
+          setSubmittedTxHash(res.txHash);
         } else {
           // Log proof inputs for debugging
           console.log("[ZK-Submit] secret length:", secret.length, "leafIndex:", leafIndex, "orgSecrets lines:", orgSecrets.split(/\n+/).filter(Boolean).length, "epoch:", externalNullifier);

@@ -453,6 +453,19 @@ export const REGISTRY_ABI = [
     ],
     outputs: [],
   },
+  {
+    type: "function",
+    name: "submitReportWithOidc",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "_orgId", type: "uint256" },
+      { name: "_nullifierHash", type: "uint256" },
+      { name: "_encryptedCID", type: "bytes" },
+      { name: "_category", type: "uint8" },
+      { name: "_authoritySignature", type: "bytes" },
+    ],
+    outputs: [],
+  },
 ] as const;
 
 export const CATEGORIES = ["Fraud", "Safety", "Ethics", "Other"] as const;
