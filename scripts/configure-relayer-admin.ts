@@ -47,6 +47,16 @@ async function main() {
         console.log(`Relayer already has SUPER_ADMIN_ROLE: ${relayerAddress}`);
     }
 
+    const oidcAuthorityRole = await registry.OIDC_AUTHORITY_ROLE();
+    const relayerIsOidcAuthority = await registry.hasRole(oidcAuthorityRole, relayerAddress);
+    if (!relayerIsOidcAuthority) {
+        const tx = await registry.grantRole(oidcAuthorityRole, relayerAddress);
+        await tx.wait();
+        console.log(`Granted OIDC_AUTHORITY_ROLE to ${relayerAddress}: ${tx.hash}`);
+    } else {
+        console.log(`Relayer already has OIDC_AUTHORITY_ROLE: ${relayerAddress}`);
+    }
+
     for (const orgId of orgIds) {
         const exists = await registry.organizationExists(orgId);
         if (!exists) {
