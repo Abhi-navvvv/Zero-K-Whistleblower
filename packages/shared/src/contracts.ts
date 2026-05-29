@@ -101,6 +101,61 @@ export const REGISTRY_ABI = [
       { name: "account", type: "address" },
     ],
   },
+  {
+    type: "error",
+    name: "RootUpdateTooFrequent",
+    inputs: [],
+  },
+  {
+    type: "error",
+    name: "CannotRevokeLastAdmin",
+    inputs: [],
+  },
+  {
+    type: "error",
+    name: "SelfRevocationNotAllowed",
+    inputs: [],
+  },
+  {
+    type: "error",
+    name: "ContractPaused",
+    inputs: [],
+  },
+  {
+    type: "error",
+    name: "InvalidSignatureCount",
+    inputs: [],
+  },
+  {
+    type: "error",
+    name: "AdminThresholdNotMet",
+    inputs: [],
+  },
+  {
+    type: "error",
+    name: "InsufficientByzantineQuorum",
+    inputs: [],
+  },
+  {
+    type: "error",
+    name: "MemberOnboardingCooldownActive",
+    inputs: [],
+  },
+  {
+    type: "error",
+    name: "ConsensusMinimumAdminsNotMet",
+    inputs: [],
+  },
+  {
+    type: "error",
+    name: "SuspiciousVotingPattern",
+    inputs: [],
+  },
+  {
+    type: "error",
+    name: "UnauthorizedOidcAuthority",
+    inputs: [],
+  },
   //Events
   {
     type: "event",
@@ -201,6 +256,20 @@ export const REGISTRY_ABI = [
     stateMutability: "view",
     inputs: [],
     outputs: [{ type: "bytes32" }],
+  },
+  {
+    type: "function",
+    name: "OIDC_AUTHORITY_ROLE",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "bytes32" }],
+  },
+  {
+    type: "function",
+    name: "paused",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "bool" }],
   },
   {
     type: "function",

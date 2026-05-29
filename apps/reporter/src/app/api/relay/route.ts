@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createPublicClient, createWalletClient, http, encodePacked, keccak256, toHex, hexToBigInt, toBytes } from "viem";
+import { BaseError, createPublicClient, createWalletClient, http, encodePacked, keccak256, toHex, hexToBigInt, toBytes } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { hardhat, sepolia } from "viem/chains";
 import { REGISTRY_ABI, REGISTRY_ADDRESS } from "@zk-whistleblower/shared/src/contracts";
@@ -257,6 +257,9 @@ export async function POST(req: NextRequest) {
                 return NextResponse.json({ error: "Invalid encryptedCIDHex" }, { status: 400 });
             }
 
+            const orgIdBigInt = asBigInt(orgId, "orgId");
+            const categoryNumber = Number(category);
+
             // 1. Resolve absolute JWKS URI
             let absoluteJwksUri = jwksUri;
             if (jwksUri.startsWith("/")) {
@@ -290,29 +293,96 @@ export async function POST(req: NextRequest) {
             const inputStr = `${email}:${relayerSalt}`;
             const nullifierHash = hexToBigInt(keccak256(toHex(inputStr)));
 
-            // 5. Generate Relayer/Authority Signature
+            // 5. Fail fast with actionable setup errors before submitting a tx.
+            const paused = await publicClient.readContract({
+                address: REGISTRY_ADDRESS,
+                abi: REGISTRY_ABI,
+                functionName: "paused",
+            });
+            if (paused) {
+                return NextResponse.json({ error: "ContractPaused" }, { status: 503 });
+            }
+
+            const organizationExists = await publicClient.readContract({
+                address: REGISTRY_ADDRESS,
+                abi: REGISTRY_ABI,
+                functionName: "organizationExists",
+                args: [orgIdBigInt],
+            });
+            if (!organizationExists) {
+                return NextResponse.json({ error: `OrganizationDoesNotExist: org ${orgIdBigInt.toString()} is not registered` }, { status: 400 });
+            }
+
+            const organization = await publicClient.readContract({
+                address: REGISTRY_ADDRESS,
+                abi: REGISTRY_ABI,
+                functionName: "getOrganization",
+                args: [orgIdBigInt],
+            });
+            if (!organization.active) {
+                return NextResponse.json({ error: `OrganizationInactive: org ${orgIdBigInt.toString()} is disabled` }, { status: 400 });
+            }
+
+            const nullifierUsed = await publicClient.readContract({
+                address: REGISTRY_ADDRESS,
+                abi: REGISTRY_ABI,
+                functionName: "orgUsedNullifiers",
+                args: [orgIdBigInt, nullifierHash],
+            });
+            if (nullifierUsed) {
+                return NextResponse.json({ error: "NullifierAlreadyUsed" }, { status: 409 });
+            }
+
+            const oidcAuthorityRole = await publicClient.readContract({
+                address: REGISTRY_ADDRESS,
+                abi: REGISTRY_ABI,
+                functionName: "OIDC_AUTHORITY_ROLE",
+            });
+            const relayerIsOidcAuthority = await publicClient.readContract({
+                address: REGISTRY_ADDRESS,
+                abi: REGISTRY_ABI,
+                functionName: "hasRole",
+                args: [oidcAuthorityRole, account.address],
+            });
+            if (!relayerIsOidcAuthority) {
+                return NextResponse.json(
+                    { error: `UnauthorizedOidcAuthority: relayer ${account.address} must be granted OIDC_AUTHORITY_ROLE` },
+                    { status: 500 }
+                );
+            }
+
+            // 6. Generate Relayer/Authority Signature
             const messageHash = keccak256(
                 encodePacked(
                     ["uint256", "uint256", "bytes", "uint8"],
-                    [asBigInt(orgId, "orgId"), nullifierHash, encryptedCIDHex as `0x${string}`, Number(category)]
+                    [orgIdBigInt, nullifierHash, encryptedCIDHex as `0x${string}`, categoryNumber]
                 )
             );
             const signature = await account.signMessage({
                 message: { raw: toBytes(messageHash) }
             });
+            const submitArgs = [
+                orgIdBigInt,
+                nullifierHash,
+                encryptedCIDHex as `0x${string}`,
+                categoryNumber,
+                signature
+            ] as const;
 
-            // 6. Submit transaction on-chain
+            await publicClient.simulateContract({
+                address: REGISTRY_ADDRESS,
+                abi: REGISTRY_ABI,
+                functionName: "submitReportWithOidc",
+                args: submitArgs,
+                account,
+            });
+
+            // 7. Submit transaction on-chain
             txHash = await walletClient.writeContract({
                 address: REGISTRY_ADDRESS,
                 abi: REGISTRY_ABI,
                 functionName: "submitReportWithOidc",
-                args: [
-                    asBigInt(orgId, "orgId"),
-                    nullifierHash,
-                    encryptedCIDHex as `0x${string}`,
-                    Number(category),
-                    signature
-                ],
+                args: submitArgs,
                 account,
             });
         } else {
@@ -391,7 +461,11 @@ export async function POST(req: NextRequest) {
             settled: true,
         });
     } catch (error) {
-        const message = error instanceof Error ? error.message : "Relayer failed";
+        const message = error instanceof BaseError
+            ? error.shortMessage
+            : error instanceof Error
+                ? error.message
+                : "Relayer failed";
         return NextResponse.json({ error: message }, { status: 500 });
     }
 }

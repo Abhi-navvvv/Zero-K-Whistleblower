@@ -637,6 +637,10 @@ export default function SubmitPage() {
   const mapContractError = (msg: string): string => {
     if (msg.includes("UnknownMerkleRoot")) return "Your directory file is out of date. Ask the admin for the latest Organization Directory File.";
     if (msg.includes("NullifierAlreadyUsed")) return "You have already submitted a report today. Please wait for the next 24h window.";
+    if (msg.includes("UnauthorizedOidcAuthority")) return "OIDC submissions are not enabled for this relayer yet. Ask the administrator to grant the relayer OIDC_AUTHORITY_ROLE.";
+    if (msg.includes("OrganizationDoesNotExist")) return "This organization is not registered on-chain yet. Ask the administrator to create or select the correct organization.";
+    if (msg.includes("OrganizationInactive")) return "This organization is currently disabled. Ask the administrator to reactivate it before submitting.";
+    if (msg.includes("ContractPaused")) return "Submissions are temporarily paused by the administrator. Please try again later.";
     if (msg.includes("InvalidZKProof")) return "Your proof could not be verified. Please check that your key file and directory file belong to the same organization, and try again.";
     if (msg.includes("Failed to fetch") || msg.includes("HTTP request failed")) return "Could not connect to network. Ensure you have internet access and the relayer is running.";
     if (msg.includes("exceeds transaction gas cap") || msg.includes("Transaction gas limit")) return "Transaction gas limit exceeded. Try again.";
