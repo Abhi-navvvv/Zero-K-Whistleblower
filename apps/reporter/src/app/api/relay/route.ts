@@ -88,6 +88,22 @@ async function ensureOrganizationApisAvailable(publicClient: ReturnType<typeof c
     }
 }
 
+function getErrorMessage(error: unknown): string {
+    if (error instanceof BaseError) {
+        return [error.shortMessage, error.details].filter(Boolean).join(". ");
+    }
+    return error instanceof Error ? error.message : String(error);
+}
+
+function isOptionalReadUnavailable(error: unknown, functionName: string): boolean {
+    const message = getErrorMessage(error);
+    return (
+        message.includes(`function "${functionName}" reverted`) ||
+        message.includes('returned no data ("0x")') ||
+        message.includes("does not have the function")
+    );
+}
+
 export async function POST(req: NextRequest) {
     try {
         const { rpcUrl, privateKey } = readConfig();
@@ -294,13 +310,19 @@ export async function POST(req: NextRequest) {
             const nullifierHash = hexToBigInt(keccak256(toHex(inputStr)));
 
             // 5. Fail fast with actionable setup errors before submitting a tx.
-            const paused = await publicClient.readContract({
-                address: REGISTRY_ADDRESS,
-                abi: REGISTRY_ABI,
-                functionName: "paused",
-            });
-            if (paused) {
-                return NextResponse.json({ error: "ContractPaused" }, { status: 503 });
+            try {
+                const paused = await publicClient.readContract({
+                    address: REGISTRY_ADDRESS,
+                    abi: REGISTRY_ABI,
+                    functionName: "paused",
+                });
+                if (paused) {
+                    return NextResponse.json({ error: "ContractPaused" }, { status: 503 });
+                }
+            } catch (err: unknown) {
+                if (!isOptionalReadUnavailable(err, "paused")) {
+                    throw err;
+                }
             }
 
             const organizationExists = await publicClient.readContract({
@@ -461,11 +483,7 @@ export async function POST(req: NextRequest) {
             settled: true,
         });
     } catch (error) {
-        const message = error instanceof BaseError
-            ? error.shortMessage
-            : error instanceof Error
-                ? error.message
-                : "Relayer failed";
+        const message = getErrorMessage(error);
         return NextResponse.json({ error: message }, { status: 500 });
     }
 }

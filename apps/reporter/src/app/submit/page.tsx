@@ -641,6 +641,7 @@ export default function SubmitPage() {
     if (msg.includes("OrganizationDoesNotExist")) return "This organization is not registered on-chain yet. Ask the administrator to create or select the correct organization.";
     if (msg.includes("OrganizationInactive")) return "This organization is currently disabled. Ask the administrator to reactivate it before submitting.";
     if (msg.includes("ContractPaused")) return "Submissions are temporarily paused by the administrator. Please try again later.";
+    if (msg.includes('function "paused" reverted')) return "Contract configuration mismatch. The selected registry does not expose the expected pause status. Please contact the administrator.";
     if (msg.includes("InvalidZKProof")) return "Your proof could not be verified. Please check that your key file and directory file belong to the same organization, and try again.";
     if (msg.includes("Failed to fetch") || msg.includes("HTTP request failed")) return "Could not connect to network. Ensure you have internet access and the relayer is running.";
     if (msg.includes("exceeds transaction gas cap") || msg.includes("Transaction gas limit")) return "Transaction gas limit exceeded. Try again.";
