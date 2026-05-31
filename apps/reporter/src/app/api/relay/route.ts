@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { BaseError, createPublicClient, createWalletClient, http, encodePacked, keccak256, toHex, hexToBigInt, toBytes } from "viem";
+import { BaseError, createPublicClient, createWalletClient, http, encodePacked, keccak256, toHex, hexToBigInt, toBytes, type Address } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { hardhat, sepolia } from "viem/chains";
 import { REGISTRY_ABI, REGISTRY_ADDRESS } from "@zk-whistleblower/shared/src/contracts";
@@ -90,7 +90,18 @@ async function ensureOrganizationApisAvailable(publicClient: ReturnType<typeof c
 
 function getErrorMessage(error: unknown): string {
     if (error instanceof BaseError) {
-        return [error.shortMessage, error.details].filter(Boolean).join(". ");
+        const messages: string[] = [];
+        let current: unknown = error;
+        while (current instanceof BaseError) {
+            if (current.shortMessage && !messages.includes(current.shortMessage)) {
+                messages.push(current.shortMessage);
+            }
+            if (current.details && !messages.includes(current.details)) {
+                messages.push(current.details);
+            }
+            current = current.cause;
+        }
+        return messages.join(". ");
     }
     return error instanceof Error ? error.message : String(error);
 }
@@ -102,6 +113,128 @@ function isOptionalReadUnavailable(error: unknown, functionName: string): boolea
         message.includes('returned no data ("0x")') ||
         message.includes("does not have the function")
     );
+}
+
+function stringifyDiagnosticValue(value: unknown): string {
+    return JSON.stringify(value, (_key, nestedValue) =>
+        typeof nestedValue === "bigint" ? nestedValue.toString() : nestedValue
+    );
+}
+
+type RegistryProbe = {
+    ok: boolean;
+    value?: unknown;
+    error?: string;
+};
+
+type OidcRegistryDiagnostics = {
+    ok: boolean;
+    issues: string[];
+    probes: Record<string, RegistryProbe>;
+};
+
+async function settleProbe(name: string, promise: Promise<unknown>): Promise<[string, RegistryProbe]> {
+    try {
+        return [name, { ok: true, value: await promise }];
+    } catch (error: unknown) {
+        return [name, { ok: false, error: getErrorMessage(error) }];
+    }
+}
+
+async function diagnoseOidcRegistry(
+    publicClient: ReturnType<typeof createPublicClient>,
+    orgId: bigint,
+    nullifierHash: bigint,
+    relayerAddress: Address
+): Promise<OidcRegistryDiagnostics> {
+    const computedOidcAuthorityRole = keccak256(toHex("OIDC_AUTHORITY_ROLE"));
+    const probeEntries = await Promise.all([
+        settleProbe("contractCode", publicClient.getCode({ address: REGISTRY_ADDRESS })),
+        settleProbe("paused", publicClient.readContract({
+            address: REGISTRY_ADDRESS,
+            abi: REGISTRY_ABI,
+            functionName: "paused",
+        })),
+        settleProbe("organizationExists", publicClient.readContract({
+            address: REGISTRY_ADDRESS,
+            abi: REGISTRY_ABI,
+            functionName: "organizationExists",
+            args: [orgId],
+        })),
+        settleProbe("getOrganization", publicClient.readContract({
+            address: REGISTRY_ADDRESS,
+            abi: REGISTRY_ABI,
+            functionName: "getOrganization",
+            args: [orgId],
+        })),
+        settleProbe("orgUsedNullifiers", publicClient.readContract({
+            address: REGISTRY_ADDRESS,
+            abi: REGISTRY_ABI,
+            functionName: "orgUsedNullifiers",
+            args: [orgId, nullifierHash],
+        })),
+        settleProbe("OIDC_AUTHORITY_ROLE", publicClient.readContract({
+            address: REGISTRY_ADDRESS,
+            abi: REGISTRY_ABI,
+            functionName: "OIDC_AUTHORITY_ROLE",
+        })),
+        settleProbe("hasRole(OIDC_AUTHORITY_ROLE, relayer)", publicClient.readContract({
+            address: REGISTRY_ADDRESS,
+            abi: REGISTRY_ABI,
+            functionName: "hasRole",
+            args: [computedOidcAuthorityRole, relayerAddress],
+        })),
+    ]);
+
+    const probes = Object.fromEntries(probeEntries) as Record<string, RegistryProbe>;
+    const issues: string[] = [];
+
+    const contractCode = probes.contractCode;
+    if (!contractCode.ok || !contractCode.value || contractCode.value === "0x") {
+        issues.push(`No contract code found at ${REGISTRY_ADDRESS}`);
+    }
+
+    const paused = probes.paused;
+    if (paused.ok && paused.value === true) {
+        issues.push("ContractPaused");
+    } else if (!paused.ok && !isOptionalReadUnavailable(paused.error ?? "", "paused")) {
+        issues.push(`paused() failed: ${paused.error}`);
+    }
+
+    const organizationExists = probes.organizationExists;
+    if (!organizationExists.ok) {
+        issues.push(`organizationExists(${orgId.toString()}) failed: ${organizationExists.error}`);
+    } else if (organizationExists.value !== true) {
+        issues.push(`OrganizationDoesNotExist: org ${orgId.toString()} is not registered`);
+    }
+
+    const organization = probes.getOrganization;
+    if (!organization.ok) {
+        issues.push(`getOrganization(${orgId.toString()}) failed: ${organization.error}`);
+    } else if ((organization.value as { active?: boolean }).active === false) {
+        issues.push(`OrganizationInactive: org ${orgId.toString()} is disabled`);
+    }
+
+    const nullifierUsed = probes.orgUsedNullifiers;
+    if (!nullifierUsed.ok) {
+        issues.push(`orgUsedNullifiers(${orgId.toString()}, ${nullifierHash.toString()}) failed: ${nullifierUsed.error}`);
+    } else if (nullifierUsed.value === true) {
+        issues.push("NullifierAlreadyUsed");
+    }
+
+    const relayerHasRole = probes["hasRole(OIDC_AUTHORITY_ROLE, relayer)"];
+    if (!relayerHasRole.ok) {
+        issues.push(`hasRole(OIDC_AUTHORITY_ROLE, relayer) failed: ${relayerHasRole.error}`);
+    } else if (relayerHasRole.value !== true) {
+        issues.push(`UnauthorizedOidcAuthority: relayer ${relayerAddress} must be granted OIDC_AUTHORITY_ROLE`);
+    }
+
+    const oidcAuthorityRole = probes.OIDC_AUTHORITY_ROLE;
+    if (!oidcAuthorityRole.ok && !isOptionalReadUnavailable(oidcAuthorityRole.error ?? "", "OIDC_AUTHORITY_ROLE")) {
+        issues.push(`OIDC_AUTHORITY_ROLE() failed: ${oidcAuthorityRole.error}`);
+    }
+
+    return { ok: issues.length === 0, issues, probes };
 }
 
 export async function POST(req: NextRequest) {
@@ -309,74 +442,13 @@ export async function POST(req: NextRequest) {
             const inputStr = `${email}:${relayerSalt}`;
             const nullifierHash = hexToBigInt(keccak256(toHex(inputStr)));
 
-            // 5. Fail fast with actionable setup errors before submitting a tx.
-            try {
-                const paused = await publicClient.readContract({
-                    address: REGISTRY_ADDRESS,
-                    abi: REGISTRY_ABI,
-                    functionName: "paused",
-                });
-                if (paused) {
-                    return NextResponse.json({ error: "ContractPaused" }, { status: 503 });
-                }
-            } catch (err: unknown) {
-                if (!isOptionalReadUnavailable(err, "paused")) {
-                    throw err;
-                }
-            }
-
-            const organizationExists = await publicClient.readContract({
-                address: REGISTRY_ADDRESS,
-                abi: REGISTRY_ABI,
-                functionName: "organizationExists",
-                args: [orgIdBigInt],
-            });
-            if (!organizationExists) {
-                return NextResponse.json({ error: `OrganizationDoesNotExist: org ${orgIdBigInt.toString()} is not registered` }, { status: 400 });
-            }
-
-            const organization = await publicClient.readContract({
-                address: REGISTRY_ADDRESS,
-                abi: REGISTRY_ABI,
-                functionName: "getOrganization",
-                args: [orgIdBigInt],
-            });
-            if (!organization.active) {
-                return NextResponse.json({ error: `OrganizationInactive: org ${orgIdBigInt.toString()} is disabled` }, { status: 400 });
-            }
-
-            const nullifierUsed = await publicClient.readContract({
-                address: REGISTRY_ADDRESS,
-                abi: REGISTRY_ABI,
-                functionName: "orgUsedNullifiers",
-                args: [orgIdBigInt, nullifierHash],
-            });
-            if (nullifierUsed) {
-                return NextResponse.json({ error: "NullifierAlreadyUsed" }, { status: 409 });
-            }
-
-            try {
-                const oidcAuthorityRole = await publicClient.readContract({
-                    address: REGISTRY_ADDRESS,
-                    abi: REGISTRY_ABI,
-                    functionName: "OIDC_AUTHORITY_ROLE",
-                });
-                const relayerIsOidcAuthority = await publicClient.readContract({
-                    address: REGISTRY_ADDRESS,
-                    abi: REGISTRY_ABI,
-                    functionName: "hasRole",
-                    args: [oidcAuthorityRole, account.address],
-                });
-                if (!relayerIsOidcAuthority) {
-                    return NextResponse.json(
-                        { error: `UnauthorizedOidcAuthority: relayer ${account.address} must be granted OIDC_AUTHORITY_ROLE` },
-                        { status: 500 }
-                    );
-                }
-            } catch (err: unknown) {
-                if (!isOptionalReadUnavailable(err, "OIDC_AUTHORITY_ROLE")) {
-                    throw err;
-                }
+            // 5. Check every OIDC registry dependency in one pass so setup errors are reported together.
+            const diagnostics = await diagnoseOidcRegistry(publicClient, orgIdBigInt, nullifierHash, account.address);
+            if (!diagnostics.ok) {
+                return NextResponse.json(
+                    { error: `Registry compatibility check failed: ${diagnostics.issues.join("; ")}`, diagnostics },
+                    { status: 500 }
+                );
             }
 
             // 6. Generate Relayer/Authority Signature
@@ -397,13 +469,27 @@ export async function POST(req: NextRequest) {
                 signature
             ] as const;
 
-            await publicClient.simulateContract({
-                address: REGISTRY_ADDRESS,
-                abi: REGISTRY_ABI,
-                functionName: "submitReportWithOidc",
-                args: submitArgs,
-                account,
-            });
+            try {
+                await publicClient.simulateContract({
+                    address: REGISTRY_ADDRESS,
+                    abi: REGISTRY_ABI,
+                    functionName: "submitReportWithOidc",
+                    args: submitArgs,
+                    account,
+                });
+            } catch (error: unknown) {
+                return NextResponse.json(
+                    {
+                        error: [
+                            "submitReportWithOidc simulation failed after registry checks passed",
+                            getErrorMessage(error),
+                            `diagnostics=${stringifyDiagnosticValue(diagnostics.probes)}`,
+                        ].filter(Boolean).join(": "),
+                        diagnostics,
+                    },
+                    { status: 500 }
+                );
+            }
 
             // 7. Submit transaction on-chain
             txHash = await walletClient.writeContract({

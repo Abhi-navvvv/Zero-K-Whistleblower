@@ -637,6 +637,8 @@ export default function SubmitPage() {
   const mapContractError = (msg: string): string => {
     if (msg.includes("UnknownMerkleRoot")) return "Your directory file is out of date. Ask the admin for the latest Organization Directory File.";
     if (msg.includes("NullifierAlreadyUsed")) return "You have already submitted a report today. Please wait for the next 24h window.";
+    if (msg.includes("Registry compatibility check failed")) return msg.replace(/^Something went wrong:\s*/i, "").slice(0, 400);
+    if (msg.includes("submitReportWithOidc simulation failed after registry checks passed")) return msg.replace(/^Something went wrong:\s*/i, "").slice(0, 500);
     if (msg.includes("UnauthorizedOidcAuthority")) return "OIDC submissions are not enabled for this relayer yet. Ask the administrator to grant the relayer OIDC_AUTHORITY_ROLE.";
     if (msg.includes("OrganizationDoesNotExist")) return "This organization is not registered on-chain yet. Ask the administrator to create or select the correct organization.";
     if (msg.includes("OrganizationInactive")) return "This organization is currently disabled. Ask the administrator to reactivate it before submitting.";
