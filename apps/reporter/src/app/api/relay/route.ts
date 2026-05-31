@@ -355,22 +355,28 @@ export async function POST(req: NextRequest) {
                 return NextResponse.json({ error: "NullifierAlreadyUsed" }, { status: 409 });
             }
 
-            const oidcAuthorityRole = await publicClient.readContract({
-                address: REGISTRY_ADDRESS,
-                abi: REGISTRY_ABI,
-                functionName: "OIDC_AUTHORITY_ROLE",
-            });
-            const relayerIsOidcAuthority = await publicClient.readContract({
-                address: REGISTRY_ADDRESS,
-                abi: REGISTRY_ABI,
-                functionName: "hasRole",
-                args: [oidcAuthorityRole, account.address],
-            });
-            if (!relayerIsOidcAuthority) {
-                return NextResponse.json(
-                    { error: `UnauthorizedOidcAuthority: relayer ${account.address} must be granted OIDC_AUTHORITY_ROLE` },
-                    { status: 500 }
-                );
+            try {
+                const oidcAuthorityRole = await publicClient.readContract({
+                    address: REGISTRY_ADDRESS,
+                    abi: REGISTRY_ABI,
+                    functionName: "OIDC_AUTHORITY_ROLE",
+                });
+                const relayerIsOidcAuthority = await publicClient.readContract({
+                    address: REGISTRY_ADDRESS,
+                    abi: REGISTRY_ABI,
+                    functionName: "hasRole",
+                    args: [oidcAuthorityRole, account.address],
+                });
+                if (!relayerIsOidcAuthority) {
+                    return NextResponse.json(
+                        { error: `UnauthorizedOidcAuthority: relayer ${account.address} must be granted OIDC_AUTHORITY_ROLE` },
+                        { status: 500 }
+                    );
+                }
+            } catch (err: unknown) {
+                if (!isOptionalReadUnavailable(err, "OIDC_AUTHORITY_ROLE")) {
+                    throw err;
+                }
             }
 
             // 6. Generate Relayer/Authority Signature
