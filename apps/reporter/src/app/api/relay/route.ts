@@ -121,6 +121,14 @@ function stringifyDiagnosticValue(value: unknown): string {
     );
 }
 
+/** Deep-converts any BigInt values in a diagnostics object to strings so it
+ *  can be safely passed to NextResponse.json() without a serialization error. */
+function sanitizeDiagnostics<T>(value: T): T {
+    return JSON.parse(JSON.stringify(value, (_key, nestedValue) =>
+        typeof nestedValue === "bigint" ? nestedValue.toString() : nestedValue
+    )) as T;
+}
+
 type RegistryProbe = {
     ok: boolean;
     value?: unknown;
@@ -446,7 +454,7 @@ export async function POST(req: NextRequest) {
             const diagnostics = await diagnoseOidcRegistry(publicClient, orgIdBigInt, nullifierHash, account.address);
             if (!diagnostics.ok) {
                 return NextResponse.json(
-                    { error: `Registry compatibility check failed: ${diagnostics.issues.join("; ")}`, diagnostics },
+                    { error: `Registry compatibility check failed: ${diagnostics.issues.join("; ")}`, diagnostics: sanitizeDiagnostics(diagnostics) },
                     { status: 500 }
                 );
             }
@@ -485,7 +493,7 @@ export async function POST(req: NextRequest) {
                             getErrorMessage(error),
                             `diagnostics=${stringifyDiagnosticValue(diagnostics.probes)}`,
                         ].filter(Boolean).join(": "),
-                        diagnostics,
+                        diagnostics: sanitizeDiagnostics(diagnostics),
                     },
                     { status: 500 }
                 );
