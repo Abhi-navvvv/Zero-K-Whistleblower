@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { BaseError, createPublicClient, createWalletClient, http, encodePacked, keccak256, toHex, hexToBigInt, toBytes, type Address } from "viem";
+import { BaseError, createPublicClient, createWalletClient, http, encodePacked, keccak256, toHex, toBytes, hexToBigInt, type Address } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { hardhat, sepolia } from "viem/chains";
 import { REGISTRY_ABI, REGISTRY_ADDRESS } from "@zk-whistleblower/shared/src/contracts";
@@ -155,7 +155,20 @@ async function diagnoseOidcRegistry(
     nullifierHash: bigint,
     relayerAddress: Address
 ): Promise<OidcRegistryDiagnostics> {
-    const computedOidcAuthorityRole = keccak256(toHex("OIDC_AUTHORITY_ROLE"));
+    // Step 1: read OIDC_AUTHORITY_ROLE bytes32 directly from the contract so we
+    // use the exact same role hash the contract stored, with no local re-encoding risk.
+    let oidcAuthorityRoleBytes32: `0x${string}`;
+    try {
+        oidcAuthorityRoleBytes32 = await publicClient.readContract({
+            address: REGISTRY_ADDRESS,
+            abi: REGISTRY_ABI,
+            functionName: "OIDC_AUTHORITY_ROLE",
+        }) as `0x${string}`;
+    } catch {
+        // Fallback: compute locally (matches Solidity keccak256("OIDC_AUTHORITY_ROLE"))
+        oidcAuthorityRoleBytes32 = keccak256(toBytes("OIDC_AUTHORITY_ROLE"));
+    }
+
     const probeEntries = await Promise.all([
         settleProbe("contractCode", publicClient.getCode({ address: REGISTRY_ADDRESS })),
         settleProbe("paused", publicClient.readContract({
@@ -181,16 +194,12 @@ async function diagnoseOidcRegistry(
             functionName: "orgUsedNullifiers",
             args: [orgId, nullifierHash],
         })),
-        settleProbe("OIDC_AUTHORITY_ROLE", publicClient.readContract({
-            address: REGISTRY_ADDRESS,
-            abi: REGISTRY_ABI,
-            functionName: "OIDC_AUTHORITY_ROLE",
-        })),
+        settleProbe("OIDC_AUTHORITY_ROLE", Promise.resolve(oidcAuthorityRoleBytes32)),
         settleProbe("hasRole(OIDC_AUTHORITY_ROLE, relayer)", publicClient.readContract({
             address: REGISTRY_ADDRESS,
             abi: REGISTRY_ABI,
             functionName: "hasRole",
-            args: [computedOidcAuthorityRole, relayerAddress],
+            args: [oidcAuthorityRoleBytes32, relayerAddress],
         })),
     ]);
 
