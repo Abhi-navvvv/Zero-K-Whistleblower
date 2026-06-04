@@ -43,9 +43,7 @@ export default function Navbar({ showWallet = false }: NavbarProps) {
           <span>UPTIME: 99.99%</span>
         </div>
 
-        <span className="hidden sm:inline text-[10px] font-mono uppercase tracking-widest text-slate-300 border border-white/20 px-3 py-2">
-          ORG {selectedOrgId}
-        </span>
+
 
         {/* Wallet connect button */}
         {showWallet && ConnectButton && (

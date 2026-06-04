@@ -15,7 +15,7 @@ const DEFAULT_NAV_ITEMS: NavItem[] = [
   { href: "/", icon: "grid_view", label: "Portal" },
 ];
 
-export default function Sidebar({ navItems = DEFAULT_NAV_ITEMS }: { navItems?: NavItem[] }) {
+export default function Sidebar({ navItems = DEFAULT_NAV_ITEMS, hideOrgSwitcher = false }: { navItems?: NavItem[], hideOrgSwitcher?: boolean }) {
   const pathname = usePathname();
   const { selectedOrgId, knownOrgIds, setSelectedOrgId, orgNames } = useOrg();
 
@@ -30,6 +30,7 @@ export default function Sidebar({ navItems = DEFAULT_NAV_ITEMS }: { navItems?: N
   return (
     <aside className="w-full md:w-64 shrink-0 border-b md:border-b-0 md:border-r border-white/10 p-6 flex flex-col gap-8 bg-primary">
       <div className="space-y-4">
+        {!hideOrgSwitcher && (
         <div className="space-y-2 border border-white/10 bg-white/5 p-3">
           <p className="text-[10px] font-bold text-slate-500 tracking-[0.2em] uppercase">
             Active Org
@@ -49,6 +50,7 @@ export default function Sidebar({ navItems = DEFAULT_NAV_ITEMS }: { navItems?: N
             Use the Admin page to create new organizations.
           </p>
         </div>
+        )}
 
         <p className="text-[10px] font-bold text-slate-500 tracking-[0.2em] uppercase">
           Operations

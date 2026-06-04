@@ -156,8 +156,8 @@ function WizardStep({
 }
 
 export default function SubmitPage() {
-  const { selectedOrgId, orgNames } = useOrg();
-  const orgName = orgNames?.[selectedOrgId] || `Organization ${selectedOrgId}`;
+  const { selectedOrgId, orgNames, knownOrgIds, setSelectedOrgId } = useOrg();
+  const baseOrgName = orgNames?.[selectedOrgId] || `Organization ${selectedOrgId}`;
 
   // Step 1: Access Credentials
   const [keyFileJson, setKeyFileJson] = useState("");
@@ -171,7 +171,7 @@ export default function SubmitPage() {
   const [keyImportError, setKeyImportError] = useState("");
 
   // Auth Method Selection
-  const [authMethod, setAuthMethod] = useState<"file" | "sso">("file");
+  const [authMethod, setAuthMethod] = useState<"file" | "sso">("sso");
 
   // OIDC ZK-Login SSO State
   const [ssoEmail, setSsoEmail] = useState("");
@@ -212,6 +212,8 @@ export default function SubmitPage() {
     const epoch = getCurrentEpoch();
     setExternalNullifier(epoch.toString());
   }, []);
+
+  const displayOrgName = authMethod === "sso" && ssoDomain ? ssoDomain : baseOrgName;
 
   useEffect(() => {
     if (typeof window !== "undefined" && window.location.hash) {
@@ -791,7 +793,7 @@ export default function SubmitPage() {
           Secure Disclosure
         </h1>
         <p className="text-slate-400 text-sm font-mono max-w-md mx-auto leading-relaxed">
-          Report wrongdoing to <strong className="text-white">{orgName}</strong> with absolute anonymity. Your identity is cryptographically hidden and mathematically impossible to trace.
+          Report wrongdoing to <strong className="text-white">{displayOrgName}</strong> with absolute anonymity. Your identity is cryptographically hidden and mathematically impossible to trace.
         </p>
       </div>
 
@@ -812,17 +814,17 @@ export default function SubmitPage() {
         <div className="flex border border-white/10 rounded overflow-hidden bg-black/40">
           <button
             type="button"
-            className={`flex-1 py-3 text-[10px] uppercase tracking-wider font-mono font-bold transition-all ${authMethod === 'file' ? 'bg-white text-black font-black' : 'bg-transparent text-slate-400 hover:text-white'}`}
-            onClick={() => setAuthMethod('file')}
-          >
-            Access Credentials File
-          </button>
-          <button
-            type="button"
             className={`flex-1 py-3 text-[10px] uppercase tracking-wider font-mono font-bold transition-all ${authMethod === 'sso' ? 'bg-white text-black font-black' : 'bg-transparent text-slate-400 hover:text-white'}`}
             onClick={() => setAuthMethod('sso')}
           >
             Work Identity SSO (OIDC ZK)
+          </button>
+          <button
+            type="button"
+            className={`flex-1 py-3 text-[10px] uppercase tracking-wider font-mono font-bold transition-all ${authMethod === 'file' ? 'bg-white text-black font-black' : 'bg-transparent text-slate-400 hover:text-white'}`}
+            onClick={() => setAuthMethod('file')}
+          >
+            Access Credentials File
           </button>
         </div>
         
@@ -906,14 +908,7 @@ export default function SubmitPage() {
                           className={`btn-cta text-xs px-5 py-2.5 flex items-center justify-center gap-2 ${!process.env.NEXT_PUBLIC_AZURE_CLIENT_ID ? 'opacity-40 cursor-not-allowed border-white/10 hover:bg-transparent' : ''}`}
                           title={!process.env.NEXT_PUBLIC_AZURE_CLIENT_ID ? "Set NEXT_PUBLIC_AZURE_CLIENT_ID in apps/reporter/.env.local to enable real login." : "Connect via your official Microsoft email account."}
                         >
-                          <Icon name="login" /> SIGN IN WITH MICROSOFT
-                        </button>
-                        <button
-                          type="button"
-                          onClick={startOidcLogin}
-                          className="btn-ghost text-xs px-5 py-2.5 flex items-center justify-center gap-2 border-white/20 hover:border-white/40"
-                        >
-                          <Icon name="autorenew" /> RUN SSO SIMULATOR
+                          LOGIN WITH MICROSOFT
                         </button>
                       </div>
                       
@@ -975,9 +970,15 @@ export default function SubmitPage() {
         </div>
 
         <div className="space-y-5">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div>
-                    <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2 block">Category of Concern</label>
+                    <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2 block">Organization</label>
+                    <div className="input bg-primary text-sm w-full py-3 opacity-70 flex items-center h-[46px] border border-white/10">
+                      {authMethod === 'sso' ? (ssoDomain ? ssoDomain : "Verifying...") : displayOrgName}
+                    </div>
+                </div>
+                <div>
+                    <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2 block">Category</label>
                     <select className="input bg-primary text-sm w-full py-3" value={category} onChange={(e) => setCategory(Number(e.target.value) as 0|1|2|3)}>
                       {CATEGORIES.map((c, i) => <option key={i} value={i}>{c}</option>)}
                     </select>
