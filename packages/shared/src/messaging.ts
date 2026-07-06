@@ -19,11 +19,6 @@ export interface EncryptedMessage {
   timestamp: string;  // ISO-8601
 }
 
-export interface MessageThread {
-  nullifierHash: string;
-  messages: EncryptedMessage[];
-}
-
 // ─── CommKey derivation ──────────────────────────────────────────────────────
 
 /**

@@ -5,7 +5,7 @@ import { Icon } from "@zk-whistleblower/ui";
 import { createPublicClient, http } from "viem";
 import { hardhat, sepolia } from "viem/chains";
 import { REGISTRY_ABI, REGISTRY_ADDRESS, CATEGORIES } from "@zk-whistleblower/shared/src/contracts";
-import { relaySubmitReport, relaySubmitReportForOrg, relayAddRootForOrg, relaySubmitReportWithOidc } from "@zk-whistleblower/shared/src/relayer";
+import { relayAction } from "@zk-whistleblower/shared/src/relayer";
 import { initPoseidon, poseidonHash } from "@zk-whistleblower/shared/src/poseidon";
 import { buildMerkleTree } from "@zk-whistleblower/shared/src/merkle";
 import { generateZKProof, type FormattedProof } from "@zk-whistleblower/shared/src/zkProof";
@@ -671,7 +671,7 @@ export default function SubmitPage() {
     if (!rootActive) {
         setSubmitProgress("Syncing organization directory with network...");
         try {
-            await relayAddRootForOrg(selectedOrgId, proof.root.toString());
+            await relayAction("addRootForOrg", { orgId: String(selectedOrgId), root: proof.root.toString() }, true);
             // Re-verify the root was actually registered
             if (supportsOrgApis) {
                 rootActive = await appPublicClient.readContract({ address: REGISTRY_ADDRESS, abi: REGISTRY_ABI, functionName: "orgRoots", args: [BigInt(selectedOrgId), proof.root] });
@@ -722,13 +722,13 @@ export default function SubmitPage() {
         const args = [BigInt(selectedOrgId), proof.pA, proof.pB, proof.pC, proof.root, proof.nullifierHash, proof.externalNullifier, cidHex, category] as const;
         await appPublicClient.simulateContract({ address: REGISTRY_ADDRESS, abi: REGISTRY_ABI, functionName: "submitReportForOrg", args, gas: SUBMIT_REPORT_GAS_LIMIT });
         setSubmitProgress("Dispatching transaction to relay...");
-        const res = await relaySubmitReportForOrg({ orgId: String(selectedOrgId), pA: [proof.pA[0].toString(), proof.pA[1].toString()], pB: [[proof.pB[0][0].toString(), proof.pB[0][1].toString()], [proof.pB[1][0].toString(), proof.pB[1][1].toString()]], pC: [proof.pC[0].toString(), proof.pC[1].toString()], root: proof.root.toString(), nullifierHash: proof.nullifierHash.toString(), externalNullifier: proof.externalNullifier.toString(), encryptedCIDHex: cidHex, category });
+        const res = await relayAction("submitReportForOrg", { orgId: String(selectedOrgId), pA: [proof.pA[0].toString(), proof.pA[1].toString()], pB: [[proof.pB[0][0].toString(), proof.pB[0][1].toString()], [proof.pB[1][0].toString(), proof.pB[1][1].toString()]], pC: [proof.pC[0].toString(), proof.pC[1].toString()], root: proof.root.toString(), nullifierHash: proof.nullifierHash.toString(), externalNullifier: proof.externalNullifier.toString(), encryptedCIDHex: cidHex, category });
         txHash = res.txHash;
     } else {
         const args = [proof.pA, proof.pB, proof.pC, proof.root, proof.nullifierHash, proof.externalNullifier, cidHex, category] as const;
         await appPublicClient.simulateContract({ address: REGISTRY_ADDRESS, abi: REGISTRY_ABI, functionName: "submitReport", args, gas: SUBMIT_REPORT_GAS_LIMIT });
         setSubmitProgress("Dispatching transaction to relay...");
-        const res = await relaySubmitReport({ pA: [proof.pA[0].toString(), proof.pA[1].toString()], pB: [[proof.pB[0][0].toString(), proof.pB[0][1].toString()], [proof.pB[1][0].toString(), proof.pB[1][1].toString()]], pC: [proof.pC[0].toString(), proof.pC[1].toString()], root: proof.root.toString(), nullifierHash: proof.nullifierHash.toString(), externalNullifier: proof.externalNullifier.toString(), encryptedCIDHex: cidHex, category });
+        const res = await relayAction("submitReport", { pA: [proof.pA[0].toString(), proof.pA[1].toString()], pB: [[proof.pB[0][0].toString(), proof.pB[0][1].toString()], [proof.pB[1][0].toString(), proof.pB[1][1].toString()]], pC: [proof.pC[0].toString(), proof.pC[1].toString()], root: proof.root.toString(), nullifierHash: proof.nullifierHash.toString(), externalNullifier: proof.externalNullifier.toString(), encryptedCIDHex: cidHex, category });
         txHash = res.txHash;
     }
 
@@ -753,7 +753,7 @@ export default function SubmitPage() {
           
           setSubmitPhase("sending");
           setSubmitProgress("Dispatching transaction to relay...");
-          const res = await relaySubmitReportWithOidc({
+          const res = await relayAction("submitReportWithOidc", {
               idToken: ssoToken,
               jwksUri: ssoJwksUri,
               orgId: String(selectedOrgId),

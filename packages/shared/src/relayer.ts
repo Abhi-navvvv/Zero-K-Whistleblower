@@ -92,60 +92,12 @@ async function relayTx(body: RelayRequest, endpoint = "/api/relay"): Promise<Rel
     };
 }
 
-// ── Privileged admin actions — routed through /api/admin-relay ─────────────
-// The admin-relay route is a server-side proxy that reads RELAY_API_KEY from
-// the server environment and injects it before forwarding to /api/relay.
-// This prevents the secret from ever reaching the browser.
 const ADMIN_RELAY = "/api/admin-relay";
 
-export function relayAddRoot(root: string) {
-    return relayTx({ action: "addRoot", payload: { root } }, ADMIN_RELAY);
-}
-
-export function relayAddRootForOrg(orgId: number, root: string) {
-    return relayTx({ action: "addRootForOrg", payload: { orgId: String(orgId), root } }, ADMIN_RELAY);
-}
-
-export function relayRevokeRoot(root: string) {
-    return relayTx({ action: "revokeRoot", payload: { root } }, ADMIN_RELAY);
-}
-
-export function relayRevokeRootForOrg(orgId: number, root: string) {
-    return relayTx({ action: "revokeRootForOrg", payload: { orgId: String(orgId), root } }, ADMIN_RELAY);
-}
-
-export function relayCreateOrganization(orgId: number, name: string) {
-    return relayTx({ action: "createOrganization", payload: { orgId: String(orgId), name } }, ADMIN_RELAY);
-}
-
-export function relaySetOrganizationActive(orgId: number, active: boolean) {
-    return relayTx({ action: "setOrganizationActive", payload: { orgId: String(orgId), active } }, ADMIN_RELAY);
-}
-
-export function relayGrantOrgAdmin(orgId: number, account: string) {
-    return relayTx({ action: "grantOrgAdmin", payload: { orgId: String(orgId), account } }, ADMIN_RELAY);
-}
-
-export function relayRevokeOrgAdmin(orgId: number, account: string) {
-    return relayTx({ action: "revokeOrgAdmin", payload: { orgId: String(orgId), account } }, ADMIN_RELAY);
-}
-
-// ── Public reporter actions — no API key required ───────────────────────────
-
-export function relaySubmitReport(
-    payload: Extract<RelayRequest, { action: "submitReport" }>['payload']
-) {
-    return relayTx({ action: "submitReport", payload });
-}
-
-export function relaySubmitReportForOrg(
-    payload: Extract<RelayRequest, { action: "submitReportForOrg" }>['payload']
-) {
-    return relayTx({ action: "submitReportForOrg", payload });
-}
-
-export function relaySubmitReportWithOidc(
-    payload: Extract<RelayRequest, { action: "submitReportWithOidc" }>['payload']
-) {
-    return relayTx({ action: "submitReportWithOidc", payload });
+export async function relayAction(
+    action: RelayRequest["action"],
+    payload: Record<string, unknown>,
+    useAdminRelay = false
+): Promise<RelayResponse> {
+    return relayTx({ action, payload } as RelayRequest, useAdminRelay ? ADMIN_RELAY : undefined);
 }

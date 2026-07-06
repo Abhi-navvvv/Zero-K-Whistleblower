@@ -90,18 +90,4 @@ export async function uploadManifest(manifest: ReportManifest): Promise<string> 
   return uploadViaApi(manifest, "Manifest upload failed");
 }
 
-export async function fetchFromIPFS(cid: string): Promise<EncryptedBlob> {
-  const normalizedCid = normalizeCid(cid);
-  validateCid(normalizedCid);
-  const res = await fetch(`https://gateway.pinata.cloud/ipfs/${normalizedCid}`);
-  if (!res.ok) throw new Error(`IPFS fetch failed (${res.status}): ${res.statusText}`);
-  return res.json() as Promise<EncryptedBlob>;
-}
 
-export async function fetchJsonFromIPFS<T = unknown>(cid: string): Promise<T> {
-  const normalizedCid = normalizeCid(cid);
-  validateCid(normalizedCid);
-  const res = await fetch(`https://gateway.pinata.cloud/ipfs/${normalizedCid}`);
-  if (!res.ok) throw new Error(`IPFS fetch failed (${res.status}): ${res.statusText}`);
-  return res.json() as Promise<T>;
-}

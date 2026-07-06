@@ -3,10 +3,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { Icon, AdminGate, useReadContract, useWatchContractEvent } from "@zk-whistleblower/ui";
 import { REGISTRY_ABI, REGISTRY_ADDRESS } from "@zk-whistleblower/shared/src/contracts";
-import {
-  relayGrantOrgAdmin,
-  relayRevokeOrgAdmin,
-} from "@zk-whistleblower/shared/src/relayer";
+import { relayAction } from "@zk-whistleblower/shared/src/relayer";
 import { useOrg } from "@zk-whistleblower/ui";
 import {
   getLeagues,
@@ -227,7 +224,7 @@ function AdminsPageInner() {
     }
     setAssignPending(true);
     try {
-      await relayGrantOrgAdmin(selectedOrgId, assignAddress.trim());
+      await relayAction("grantOrgAdmin", { orgId: String(selectedOrgId), account: assignAddress.trim() }, true);
       setMembers(addLeagueMember(selectedOrgId, { address: assignAddress.trim(), leagueId: assignLeagueId, assignedAt: new Date().toISOString() }));
       setAssignSuccess("Admin granted and added to league.");
       setAssignAddress("");
@@ -246,7 +243,7 @@ function AdminsPageInner() {
     }
     setRevokePending(true);
     try {
-      await relayRevokeOrgAdmin(selectedOrgId, revokeAddress.trim());
+      await relayAction("revokeOrgAdmin", { orgId: String(selectedOrgId), account: revokeAddress.trim() }, true);
       setMembers(removeLeagueMember(selectedOrgId, revokeAddress.trim()));
       setRevokeSuccess("Admin role revoked.");
       setRevokeAddress("");

@@ -7,8 +7,7 @@ import {
 } from "@zk-whistleblower/ui";
 import { Icon, AdminGate } from "@zk-whistleblower/ui";
 import { REGISTRY_ABI, REGISTRY_ADDRESS } from "@zk-whistleblower/shared/src/contracts";
-import { relayAddRootForOrg } from "@zk-whistleblower/shared/src/relayer";
-import { relayCreateOrganization, relayRevokeRootForOrg, relaySetOrganizationActive } from "@zk-whistleblower/shared/src/relayer";
+import { relayAction } from "@zk-whistleblower/shared/src/relayer";
 import { initPoseidon, poseidonHash } from "@zk-whistleblower/shared/src/poseidon";
 import { buildMerkleTree } from "@zk-whistleblower/shared/src/merkle";
 import { generateSecret, type MemberKeyFile } from "@zk-whistleblower/shared/src/secretGen";
@@ -346,7 +345,7 @@ export default function AdminPage() {
 
     setCreateOrgPending(true);
     try {
-      await relayCreateOrganization(orgId, createOrgName.trim());
+      await relayAction("createOrganization", { orgId: String(orgId), name: createOrgName.trim() }, true);
       rememberOrgId(orgId);
       setCreateOrgSuccess(`Organization ${orgId} created`);
     } catch (e: unknown) {
@@ -367,7 +366,7 @@ export default function AdminPage() {
 
     setSetOrgPending(true);
     try {
-      await relaySetOrganizationActive(orgId, targetOrgActive);
+      await relayAction("setOrganizationActive", { orgId: String(orgId), active: targetOrgActive }, true);
       rememberOrgId(orgId);
       setSetOrgSuccess(`Organization ${orgId} updated`);
     } catch (e: unknown) {
@@ -384,7 +383,7 @@ export default function AdminPage() {
     setAddSettled(false);
     setAddPending(true);
     try {
-      const { txHash, settled, receiptStatus } = await relayAddRootForOrg(selectedOrgId, addRootInput.trim());
+      const { txHash, settled, receiptStatus } = await relayAction("addRootForOrg", { orgId: String(selectedOrgId), root: addRootInput.trim() }, true);
       setAddHash(txHash);
       if (receiptStatus === "reverted") {
         throw new Error("Add root transaction reverted on-chain");
@@ -404,7 +403,7 @@ export default function AdminPage() {
     setRevokeSettled(false);
     setRevokePending(true);
     try {
-      const { txHash, settled, receiptStatus } = await relayRevokeRootForOrg(selectedOrgId, revokeInput.trim());
+      const { txHash, settled, receiptStatus } = await relayAction("revokeRootForOrg", { orgId: String(selectedOrgId), root: revokeInput.trim() }, true);
       setRevokeHash(txHash);
       if (receiptStatus === "reverted") {
         throw new Error("Revoke root transaction reverted on-chain");

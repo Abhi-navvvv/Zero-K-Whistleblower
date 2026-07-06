@@ -40,12 +40,9 @@ contract WhistleblowerRegistry is AccessControl {
     error CannotRevokeLastAdmin();
     error SelfRevocationNotAllowed();
     error ContractPaused();
-    error InvalidSignatureCount();
-    error AdminThresholdNotMet();
     error InsufficientByzantineQuorum();
     error MemberOnboardingCooldownActive();
     error ConsensusMinimumAdminsNotMet();
-    error SuspiciousVotingPattern();
     error UnauthorizedOidcAuthority();
 
     IGroth16Verifier public immutable verifier;
@@ -172,7 +169,6 @@ contract WhistleblowerRegistry is AccessControl {
 
     event EmergencyPaused(address indexed guardian, uint256 timestamp);
     event EmergencyUnpaused(address indexed guardian, uint256 timestamp);
-    event SuspiciousAdminVoteChange(uint256 indexed reportId, address indexed admin, uint8 prevVote, uint8 newVote);
     event SybilDetected(uint256 indexed orgId, uint256 newMemberCount, uint256 timestamp);
     event ByzantineThresholdEnforced(uint256 indexed reportId, uint256 assignedAdmins, uint256 requiredQuorum, uint256 timestamp);
 
