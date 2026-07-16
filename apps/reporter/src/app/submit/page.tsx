@@ -14,6 +14,14 @@ import { encryptReportForOrgPublicKey } from "@zk-whistleblower/shared/src/encry
 import { uploadEncryptedReport, uploadEncryptedFile, uploadManifest } from "@zk-whistleblower/shared/src/ipfs";
 import { encryptFile, stripMetadata, type ReportManifest, type SanitizationResult } from "@zk-whistleblower/shared/src/fileEncryption";
 import { deriveCommKey } from "@zk-whistleblower/shared/src/messaging";
+import {
+  b64urlToBigInt,
+  modPow,
+  modInverse,
+  generateBlindingFactorBrowser,
+  blindMessage,
+  unblindSignature
+} from "@zk-whistleblower/shared/src/blindSignMath";
 
 import { getCurrentEpoch, formatEpochRange } from "@zk-whistleblower/shared/src/epoch";
 import { useOrg } from "@zk-whistleblower/ui";
@@ -181,10 +189,13 @@ export default function SubmitPage() {
   const [ssoVerified, setSsoVerified] = useState(false);
   const [ssoStatus, setSsoStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
   const [ssoError, setSsoError] = useState("");
+  const [ssoProgress, setSsoProgress] = useState("");
   const [isSsoModalOpen, setIsSsoModalOpen] = useState(false);
   const [ephemeralPrivateKey, setEphemeralPrivateKey] = useState("");
   const [tempNonce, setTempNonce] = useState("");
-  const [ssoNullifier, setSsoNullifier] = useState("");
+  const [ssoNullifierHash, setSsoNullifierHash] = useState<bigint | null>(null);
+  const [generatedSecret, setGeneratedSecret] = useState<bigint | null>(null);
+  const [unblindedSignature, setUnblindedSignature] = useState("");
 
   // Hidden Cryptography State
   const [secret, setSecret] = useState("");
@@ -228,6 +239,12 @@ export default function SubmitPage() {
     }
   }, []);
 
+  const generateRandomSecret = (): bigint => {
+    const bytes = new Uint8Array(31);
+    window.crypto.getRandomValues(bytes);
+    return BigInt("0x" + Array.from(bytes).map(b => b.toString(16).padStart(2, "0")).join(""));
+  };
+
   const processOidcToken = async (idToken: string, jwksUri: string, expectedNonce: string, privKeyJwk: string) => {
     // 1. Verify JWT
     const verifiedData = await verifyOidcJwtLocal(idToken, jwksUri);
@@ -243,24 +260,61 @@ export default function SubmitPage() {
       throw new Error(`Domain mismatch: Only @${allowedDomain} accounts are authorized to submit disclosures.`);
     }
 
-    // 4. Generate secure nullifier
-    const sub = verifiedData.sub;
-    const salt = localStorage.getItem("oidc_salt") || (() => {
-      const newSalt = Math.floor(Math.random() * 1000000).toString();
-      localStorage.setItem("oidc_salt", newSalt);
-      return newSalt;
-    })();
-    const inputBuffer = new TextEncoder().encode(sub + salt);
-    const hashBuffer = await window.crypto.subtle.digest("SHA-256", inputBuffer);
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
-    const nullifierHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+    // 4. Generate local secret & nullifierHash
+    setSsoStatus("loading");
+    setSsoProgress("Establishing secure anonymous path...");
+    const secretVal = generateRandomSecret();
 
-    // 5. Update state variables
+    await initPoseidon();
+    const extNull = BigInt(externalNullifier.trim() || "42");
+    const nullifierHash = poseidonHash([secretVal, extNull]);
+
+    // 5. Fetch Relayer Blind-signing public key
+    setSsoProgress("Requesting anonymous credential key...");
+    const keyRes = await fetch("/api/oidc/blind-sign");
+    if (!keyRes.ok) {
+      throw new Error("Failed to retrieve OIDC blind signing key from relayer");
+    }
+    const keys = await keyRes.json();
+    const N = b64urlToBigInt(keys.n);
+    const e = b64urlToBigInt(keys.e);
+
+    // 6. Blind the nullifier
+    setSsoProgress("Blinding local identity path...");
+    const r = generateBlindingFactorBrowser(N);
+    const blindedMsg = blindMessage(nullifierHash, r, e, N);
+
+    // 7. Request signature on blinded nullifier
+    setSsoProgress("Signing anonymous credential...");
+    const signRes = await fetch("/api/oidc/blind-sign", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        idToken,
+        jwksUri,
+        orgId: String(selectedOrgId),
+        blindedNullifier: blindedMsg.toString(16),
+      }),
+    });
+    const signData = await signRes.json();
+    if (!signRes.ok) {
+      throw new Error(signData.error || "Failed to sign anonymous credential");
+    }
+    const blindedSignature = BigInt("0x" + signData.blindedSignature);
+
+    // 8. Unblind the signature locally
+    setSsoProgress("Unblinding anonymous signature locally...");
+    const rInv = modInverse(r, N);
+    const unblindedSigVal = unblindSignature(blindedSignature, rInv, N);
+
+    // 9. Update state variables
     setSsoEmail(verifiedData.email);
     setSsoDomain(verifiedData.domain);
     setSsoToken(idToken);
     setSsoJwksUri(jwksUri);
-    setSsoNullifier(nullifierHex);
+    setGeneratedSecret(secretVal);
+    setSsoNullifierHash(nullifierHash);
+    setUnblindedSignature(unblindedSigVal.toString(16));
     setEphemeralPrivateKey(privKeyJwk);
     setSsoVerified(true);
     setSsoStatus("done");
@@ -550,10 +604,21 @@ export default function SubmitPage() {
 
     // Derive communication key for anonymous two-way messaging
     setSubmitProgress("Generating communication key...");
-    const secretVal = authMethod === "sso"
-        ? BigInt("0x" + ssoNullifier)
-        : BigInt(secret.trim());
-    const commKey = await deriveCommKey(secretVal);
+    let secretVal: bigint;
+    let nullifierHashVal: bigint | undefined;
+
+    if (authMethod === "sso") {
+      if (!generatedSecret || !ssoNullifierHash) {
+        throw new Error("OIDC session not fully initialized. Please connect via SSO again.");
+      }
+      secretVal = generatedSecret;
+      nullifierHashVal = ssoNullifierHash;
+    } else {
+      secretVal = BigInt(secret.trim());
+      await initPoseidon();
+      nullifierHashVal = poseidonHash([secretVal, BigInt(externalNullifier.trim())]);
+    }
+    const commKey = await deriveCommKey(secretVal, nullifierHashVal);
 
     // Determine recipient metadata
     const recipientMeta = selectedRecipient
@@ -651,8 +716,27 @@ export default function SubmitPage() {
     if (msg.includes("Failed to fetch") || msg.includes("HTTP request failed")) return "Could not connect to network. Ensure you have internet access and the relayer is running.";
     if (msg.includes("exceeds transaction gas cap") || msg.includes("Transaction gas limit")) return "Transaction gas limit exceeded. Try again.";
     if (msg.includes("Internal error")) return "Blockchain node returned an internal error. Verify your files are correct and try again.";
-    if (msg.includes('returned no data ("0x")') || msg.includes("does not have the function") || msg.includes("address is not a contract")) return "Contract configuration mismatch. Please contact the administrator.";
     return `Something went wrong: ${msg.slice(0, 200)}`;
+  };
+
+  const pollQueueStatus = async (queueId: string): Promise<`0x${string}`> => {
+    while (true) {
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      const res = await fetch(`/api/relay?id=${queueId}`);
+      if (!res.ok) {
+        throw new Error(`Failed to check transaction status: ${res.statusText}`);
+      }
+      const data = await res.json();
+      if (data.status === "SUCCESS") {
+        return data.txHash;
+      }
+      if (data.status === "FAILED") {
+        throw new Error(data.error || "Transaction broadcast failed");
+      }
+      if (data.status === "BROADCASTING") {
+        setSubmitProgress("Transaction broadcasting on-chain...");
+      }
+    }
   };
 
   const executeSubmitToChain = async (proof: FormattedProof, cidHex: `0x${string}`) => {
@@ -717,25 +801,64 @@ export default function SubmitPage() {
 
     // Simulate full contract call
     setSubmitProgress("Simulating transaction...");
-    let txHash: `0x${string}`;
+    let queueRes;
     if (supportsOrgApis) {
         const args = [BigInt(selectedOrgId), proof.pA, proof.pB, proof.pC, proof.root, proof.nullifierHash, proof.externalNullifier, cidHex, category] as const;
         await appPublicClient.simulateContract({ address: REGISTRY_ADDRESS, abi: REGISTRY_ABI, functionName: "submitReportForOrg", args, gas: SUBMIT_REPORT_GAS_LIMIT });
         setSubmitProgress("Dispatching transaction to relay...");
-        const res = await relayAction("submitReportForOrg", { orgId: String(selectedOrgId), pA: [proof.pA[0].toString(), proof.pA[1].toString()], pB: [[proof.pB[0][0].toString(), proof.pB[0][1].toString()], [proof.pB[1][0].toString(), proof.pB[1][1].toString()]], pC: [proof.pC[0].toString(), proof.pC[1].toString()], root: proof.root.toString(), nullifierHash: proof.nullifierHash.toString(), externalNullifier: proof.externalNullifier.toString(), encryptedCIDHex: cidHex, category });
-        txHash = res.txHash;
+        queueRes = await relayAction("submitReportForOrg", { orgId: String(selectedOrgId), pA: [proof.pA[0].toString(), proof.pA[1].toString()], pB: [[proof.pB[0][0].toString(), proof.pB[0][1].toString()], [proof.pB[1][0].toString(), proof.pB[1][1].toString()]], pC: [proof.pC[0].toString(), proof.pC[1].toString()], root: proof.root.toString(), nullifierHash: proof.nullifierHash.toString(), externalNullifier: proof.externalNullifier.toString(), encryptedCIDHex: cidHex, category });
     } else {
         const args = [proof.pA, proof.pB, proof.pC, proof.root, proof.nullifierHash, proof.externalNullifier, cidHex, category] as const;
         await appPublicClient.simulateContract({ address: REGISTRY_ADDRESS, abi: REGISTRY_ABI, functionName: "submitReport", args, gas: SUBMIT_REPORT_GAS_LIMIT });
         setSubmitProgress("Dispatching transaction to relay...");
-        const res = await relayAction("submitReport", { pA: [proof.pA[0].toString(), proof.pA[1].toString()], pB: [[proof.pB[0][0].toString(), proof.pB[0][1].toString()], [proof.pB[1][0].toString(), proof.pB[1][1].toString()]], pC: [proof.pC[0].toString(), proof.pC[1].toString()], root: proof.root.toString(), nullifierHash: proof.nullifierHash.toString(), externalNullifier: proof.externalNullifier.toString(), encryptedCIDHex: cidHex, category });
-        txHash = res.txHash;
+        queueRes = await relayAction("submitReport", { pA: [proof.pA[0].toString(), proof.pA[1].toString()], pB: [[proof.pB[0][0].toString(), proof.pB[0][1].toString()], [proof.pB[1][0].toString(), proof.pB[1][1].toString()]], pC: [proof.pC[0].toString(), proof.pC[1].toString()], root: proof.root.toString(), nullifierHash: proof.nullifierHash.toString(), externalNullifier: proof.externalNullifier.toString(), encryptedCIDHex: cidHex, category });
     }
 
-    setSubmitProgress("Transaction pending...");
+    if (!queueRes.queued || !queueRes.id) {
+        throw new Error("Failed to queue transaction on relayer");
+    }
+
+    setSubmitProgress("Report queued. Waiting for broadcast... (this protects your anonymity)");
+    const txHash = await pollQueueStatus(queueRes.id);
     setSubmittedTxHash(txHash);
-    await appPublicClient.waitForTransactionReceipt({ hash: txHash });
     setSubmitProgress("Transaction confirmed!");
+  };
+
+  const handleDownloadInboxKey = () => {
+    let secretStr = "";
+    let nullifierHashStr = "";
+    
+    if (authMethod === "sso") {
+      if (generatedSecret && ssoNullifierHash) {
+        secretStr = generatedSecret.toString();
+        nullifierHashStr = ssoNullifierHash.toString();
+      }
+    } else {
+      secretStr = secret.trim();
+      const secretBig = BigInt(secretStr);
+      const extNull = BigInt(externalNullifier.trim() || "42");
+      const nullifierHashVal = poseidonHash([secretBig, extNull]);
+      nullifierHashStr = nullifierHashVal.toString();
+    }
+
+    if (!secretStr || !nullifierHashStr) return;
+
+    const data = {
+      memberId: authMethod === "sso" ? ssoEmail : "whistleblower",
+      commitment: authMethod === "sso" ? "" : poseidonHash([BigInt(secretStr)]).toString(),
+      secret: secretStr,
+      nullifierHash: nullifierHashStr,
+    };
+
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${displayOrgName.replace(/\s+/g, "_")}_inbox_key.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   };
 
   const handleFullSubmit = async () => {
@@ -753,14 +876,26 @@ export default function SubmitPage() {
           
           setSubmitPhase("sending");
           setSubmitProgress("Dispatching transaction to relay...");
+          
+          if (!ssoNullifierHash || !unblindedSignature) {
+            throw new Error("OIDC session not fully initialized. Please connect via SSO again.");
+          }
+
           const res = await relayAction("submitReportWithOidc", {
-              idToken: ssoToken,
-              jwksUri: ssoJwksUri,
               orgId: String(selectedOrgId),
               category: Number(category),
-              encryptedCIDHex: cidHex
+              encryptedCIDHex: cidHex,
+              nullifierHash: ssoNullifierHash.toString(),
+              unblindedSignature: unblindedSignature
           });
-          setSubmittedTxHash(res.txHash);
+
+          if (!res.queued || !res.id) {
+              throw new Error("Failed to queue transaction on relayer");
+          }
+
+          setSubmitProgress("Report queued. Waiting for broadcast... (this protects your anonymity)");
+          const txHash = await pollQueueStatus(res.id);
+          setSubmittedTxHash(txHash);
         } else {
           // Log proof inputs for debugging
           console.log("[ZK-Submit] secret length:", secret.length, "leafIndex:", leafIndex, "orgSecrets lines:", orgSecrets.split(/\n+/).filter(Boolean).length, "epoch:", externalNullifier);
@@ -886,11 +1021,10 @@ export default function SubmitPage() {
                       <p className="text-[11px] font-mono text-slate-400 leading-relaxed">
                         Verify your membership via zero-knowledge OIDC verification using either your Google Workspace account or the local OIDC Simulator.
                       </p>
-                      
                       {ssoStatus === "loading" && (
                         <div className="flex items-center gap-2 text-xs font-mono text-slate-400">
                           <Icon name="autorenew" className="animate-spin text-purple-400" />
-                          <span>Generating keys and contacting Identity Provider...</span>
+                          <span>{ssoProgress || "Generating keys and contacting Identity Provider..."}</span>
                         </div>
                       )}
                       
@@ -930,8 +1064,8 @@ export default function SubmitPage() {
                       </div>
                       <div className="flex justify-between border-b border-white/5 pb-2">
                         <span className="text-slate-500">Identity Nullifier Hash:</span>
-                        <span className="text-slate-400 text-[10px] select-all truncate max-w-[200px]" title={ssoNullifier}>
-                          {ssoNullifier.slice(0, 24)}...
+                        <span className="text-slate-400 text-[10px] select-all truncate max-w-[200px]" title={ssoNullifierHash ? ssoNullifierHash.toString() : ""}>
+                          {ssoNullifierHash ? ssoNullifierHash.toString().slice(0, 24) : ""}...
                         </span>
                       </div>
                       <button
@@ -940,7 +1074,9 @@ export default function SubmitPage() {
                           setSsoVerified(false);
                           setSsoEmail("");
                           setSsoDomain("");
-                          setSsoNullifier("");
+                          setSsoNullifierHash(null);
+                          setGeneratedSecret(null);
+                          setUnblindedSignature("");
                           setSsoToken("");
                         }}
                         className="btn-ghost text-[10px] px-3 py-1 mt-2 text-red-400 hover:text-red-300"
@@ -1121,6 +1257,23 @@ export default function SubmitPage() {
                         <p className="text-[10px] font-mono text-slate-400 select-all">{submittedTxHash}</p>
                     </div>
                 )}
+                <div className="mt-4 p-4 bg-blue-500/10 border border-blue-500/30 rounded-lg max-w-md mx-auto text-left space-y-3">
+                    <div className="flex gap-3">
+                        <Icon name="vpn_key" className="text-blue-400 text-xl shrink-0" />
+                        <div>
+                            <p className="text-xs font-bold text-blue-400 uppercase tracking-wider mb-1">Download Anonymous Inbox Key</p>
+                            <p className="text-[11px] font-mono text-blue-300 leading-relaxed">
+                                To check your anonymous inbox for responses from the organization, download your custom Access Key File. This key file is not saved by the server and is required to unlock your inbox threads.
+                            </p>
+                        </div>
+                    </div>
+                    <button
+                        onClick={handleDownloadInboxKey}
+                        className="btn-ghost text-xs w-full py-2 bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 font-bold border border-blue-500/40"
+                    >
+                        DOWNLOAD INBOX KEY FILE (.json)
+                    </button>
+                </div>
                 <div className="pt-4">
                     <button className="btn-ghost text-xs px-6 py-2" onClick={() => window.location.reload()}>Submit Another Report</button>
                 </div>

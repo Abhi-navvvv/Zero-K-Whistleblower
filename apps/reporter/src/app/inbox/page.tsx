@@ -66,8 +66,13 @@ export default function InboxPage() {
         const secretBig = BigInt(parsed.secret.trim());
         setSecret(secretBig.toString());
 
+        let nullifierHashBig: bigint | undefined;
+        if (typeof parsed.nullifierHash === "string" && parsed.nullifierHash.trim()) {
+          nullifierHashBig = BigInt(parsed.nullifierHash.trim());
+        }
+
         // Derive stable message thread and commKey
-        const key = await deriveCommKey(secretBig);
+        const key = await deriveCommKey(secretBig, nullifierHashBig);
         setCommKey(key);
         const nextThreadId = await deriveThreadId(key);
         setThreadId(nextThreadId);
