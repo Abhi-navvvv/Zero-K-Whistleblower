@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "compile:circuit": "tsx scripts/compile-circuit.ts",
-    "test": "npx hardhat test mocha",
+    "test": "npx hardhat test mocha && pnpm --filter @zk-whistleblower/shared test",
     "register": "npx hardhat run scripts/register-members.ts",
     "configure:relayer": "npx hardhat run scripts/configure-relayer-admin.ts",
     "decrypt": "npx tsx scripts/decrypt-secret.ts",
@@ -35,7 +35,8 @@
     "mocha": "^11.7.5",
     "snarkjs": "^0.7.6",
     "tsx": "^4.20.5",
-    "typescript": "~5.8.3"
+    "typescript": "~5.8.3",
+    "@zk-whistleblower/shared": "workspace:*"
   },
   "dependencies": {
     "@openzeppelin/contracts": "^5.6.1"

@@ -55,6 +55,7 @@ describe("WhistleblowerRegistry", function () {
     let nonOwner: any;
     let thirdAccount: any;
     let fourthAccount: any;
+    let fifthAccount: any;
     let superAdminRole: string;
 
     const secrets = [123456789n, 987654321n, 555555555n];
@@ -66,7 +67,7 @@ describe("WhistleblowerRegistry", function () {
         this.timeout(30000);
         await initPoseidon();
 
-        [owner, nonOwner, thirdAccount, fourthAccount] = await ethers.getSigners();
+        [owner, nonOwner, thirdAccount, fourthAccount, fifthAccount] = await ethers.getSigners();
 
         commitments = secrets.map((s) => poseidonHash([s]));
         tree = buildMerkleTree(commitments);
@@ -77,6 +78,10 @@ describe("WhistleblowerRegistry", function () {
         ]);
 
         superAdminRole = await registry.SUPER_ADMIN_ROLE();
+
+        // Grant to meet 3-admin consensus for DEFAULT_ORG_ID (0)
+        await registry.grantOrgAdmin(0, thirdAccount.address);
+        await registry.grantOrgAdmin(0, fourthAccount.address);
 
         await registry.addRoot(tree.root);
     });
@@ -129,6 +134,10 @@ describe("WhistleblowerRegistry", function () {
         });
 
         it("should allow granted org admin to manage that organization", async function () {
+            // Grant to thirdAccount and fourthAccount so we have 3 admin grants (nonOwner, thirdAccount, fourthAccount) -> orgAdminCount = 3
+            await registry.grantOrgAdmin(1, thirdAccount.address);
+            await registry.grantOrgAdmin(1, fourthAccount.address);
+
             const orgRoot = 1234567n;
             await expect(registry.connect(nonOwner).addRootForOrg(1, orgRoot))
                 .to.emit(registry, "RootAddedForOrg")
@@ -141,12 +150,12 @@ describe("WhistleblowerRegistry", function () {
 
         it("should allow org admin to grant another org admin", async function () {
             await expect(
-                registry.connect(nonOwner).grantOrgAdmin(1, thirdAccount.address)
+                registry.connect(nonOwner).grantOrgAdmin(1, fifthAccount.address)
             )
                 .to.emit(registry, "OrgAdminGranted")
-                .withArgs(1n, thirdAccount.address, nonOwner.address);
+                .withArgs(1n, fifthAccount.address, nonOwner.address);
 
-            expect(await registry.isOrgAdmin(1, thirdAccount.address)).to.equal(true);
+            expect(await registry.isOrgAdmin(1, fifthAccount.address)).to.equal(true);
         });
 
         it("should keep AccessControl org role and isOrgAdmin in sync", async function () {
@@ -166,14 +175,17 @@ describe("WhistleblowerRegistry", function () {
         });
 
         it("should reject duplicate org admin grant and duplicate revoke", async function () {
-            await registry.grantOrgAdmin(1, fourthAccount.address);
+            const signers = await ethers.getSigners();
+            const sixthAccount = signers[5];
+
+            await registry.grantOrgAdmin(1, sixthAccount.address);
             await expect(
-                registry.grantOrgAdmin(1, fourthAccount.address)
+                registry.grantOrgAdmin(1, sixthAccount.address)
             ).to.be.revertedWithCustomError(registry, "OrgAdminAlreadyGranted");
 
-            await registry.revokeOrgAdmin(1, fourthAccount.address);
+            await registry.revokeOrgAdmin(1, sixthAccount.address);
             await expect(
-                registry.revokeOrgAdmin(1, fourthAccount.address)
+                registry.revokeOrgAdmin(1, sixthAccount.address)
             ).to.be.revertedWithCustomError(registry, "OrgAdminAlreadyRevoked");
         });
     });
@@ -181,6 +193,9 @@ describe("WhistleblowerRegistry", function () {
     describe("Root management", function () {
         it("should allow owner to add a root", async function () {
             const newRoot = 12345n;
+            await ethers.provider.send("evm_increaseTime", [7 * 24 * 60 * 60 + 1]);
+            await ethers.provider.send("evm_mine");
+
             await expect(registry.addRoot(newRoot))
                 .to.emit(registry, "RootAdded")
                 .withArgs(newRoot);
@@ -197,6 +212,9 @@ describe("WhistleblowerRegistry", function () {
 
         it("should allow owner to revoke a root", async function () {
             const tempRoot = 99999n;
+            await ethers.provider.send("evm_increaseTime", [7 * 24 * 60 * 60 + 1]);
+            await ethers.provider.send("evm_mine");
+
             await registry.addRoot(tempRoot);
             await expect(registry.revokeRoot(tempRoot))
                 .to.emit(registry, "RootRevoked")
@@ -295,6 +313,10 @@ describe("WhistleblowerRegistry", function () {
             const tempSecrets = [111n];
             const tempCommitments = tempSecrets.map((s) => poseidonHash([s]));
             const tempTree = buildMerkleTree(tempCommitments);
+
+            await ethers.provider.send("evm_increaseTime", [7 * 24 * 60 * 60 + 1]);
+            await ethers.provider.send("evm_mine");
+
             await registry.addRoot(tempTree.root);
             await registry.revokeRoot(tempTree.root);
 
@@ -348,6 +370,14 @@ describe("WhistleblowerRegistry", function () {
 
             await registry.createOrganization(10, "HR");
             await registry.createOrganization(20, "Legal");
+
+            // Grant to meet 3-admin consensus
+            await registry.grantOrgAdmin(10, nonOwner.address);
+            await registry.grantOrgAdmin(10, thirdAccount.address);
+            await registry.grantOrgAdmin(10, fourthAccount.address);
+            await registry.grantOrgAdmin(20, nonOwner.address);
+            await registry.grantOrgAdmin(20, thirdAccount.address);
+            await registry.grantOrgAdmin(20, fourthAccount.address);
 
             const orgSecrets = [701n, 702n];
             const orgCommitments = orgSecrets.map((s) => poseidonHash([s]));
@@ -432,6 +462,9 @@ describe("WhistleblowerRegistry", function () {
             ).to.be.revertedWithCustomError(registry, "OrganizationDoesNotExist");
 
             await registry.createOrganization(30, "Temp");
+            await registry.grantOrgAdmin(30, nonOwner.address);
+            await registry.grantOrgAdmin(30, thirdAccount.address);
+            await registry.grantOrgAdmin(30, fourthAccount.address);
             await registry.addRootForOrg(30, tempTree.root);
             await registry.setOrganizationActive(30, false);
 
@@ -457,6 +490,9 @@ describe("WhistleblowerRegistry", function () {
             const demoCommitments = demoSecrets.map((s) => poseidonHash([s]));
             const demoTree = buildMerkleTree(demoCommitments);
             const demoExternalNullifier = 777n;
+
+            await ethers.provider.send("evm_increaseTime", [7 * 24 * 60 * 60 + 1]);
+            await ethers.provider.send("evm_mine");
 
             await registry.addRoot(demoTree.root);
 

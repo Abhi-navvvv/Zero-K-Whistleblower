@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "main": "src/index.ts",
   "types": "src/index.ts",
+  "scripts": {
+    "test": "mocha --import=tsx test/BlindSignMath.test.ts"
+  },
   "dependencies": {
     "circomlibjs": "^0.1.7",
     "pdf-lib": "^1.17.1",

@@ -32,11 +32,11 @@ describe("WhistleblowerRegistry consensus anchoring", function () {
         tree = buildMerkleTree(secrets.map((s) => poseidonHash([s])));
         verifier = await ethers.deployContract("Groth16Verifier");
         registry = await ethers.deployContract("WhistleblowerRegistry", [await verifier.getAddress()]);
-        // add a dummy root so submitReport works
-        await registry.addRoot(tree.root);
         await registry.grantOrgAdmin(0, admin1.address);
         await registry.grantOrgAdmin(0, admin2.address);
         await registry.grantOrgAdmin(0, admin3.address);
+        // add a dummy root so submitReport works
+        await registry.addRoot(tree.root);
     });
 
     it("should allow anchoring a consensus with aggregated signatures", async function () {

@@ -29,6 +29,9 @@ importers:
       '@types/node':
         specifier: ^22.19.15
         version: 22.19.15
+      '@zk-whistleblower/shared':
+        specifier: workspace:*
+        version: link:packages/shared
       chai:
         specifier: ^6.2.2
         version: 6.2.2
