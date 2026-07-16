@@ -10,3 +10,5 @@ export * from "./poseidon";
 export * from "./relayer";
 export * from "./secretGen";
 export * from "./zkProof";
+export * from "./blindSign";
+export * from "./blindSignMath";
