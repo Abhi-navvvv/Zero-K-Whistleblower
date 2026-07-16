@@ -7,6 +7,7 @@ export interface MemberKeyFile {
   memberId: string;
   commitment: string;
   secret: string;
+  nullifierHash?: string;
 }
 
 export interface MemberManifest {

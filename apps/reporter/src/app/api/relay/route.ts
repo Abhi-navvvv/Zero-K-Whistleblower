@@ -360,8 +360,8 @@ export async function POST(req: NextRequest) {
                 const N = b64urlToBigInt(keys.publicKey.n);
                 const e = b64urlToBigInt(keys.publicKey.e);
 
-                const msgVal = BigInt(nullifierHash);
-                const sigVal = BigInt("0x" + unblindedSignature);
+                const msgVal = BigInt(String(nullifierHash));
+                const sigVal = BigInt("0x" + String(unblindedSignature));
 
                 const isValid = modPow(sigVal, e, N) === msgVal;
                 if (!isValid) {
