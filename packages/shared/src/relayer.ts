@@ -1,8 +1,10 @@
 export interface RelayResponse {
-    txHash: `0x${string}`;
+    txHash?: `0x${string}`;
     settled?: boolean;
     receiptStatus?: "success" | "reverted";
     blockNumber?: string;
+    queued?: boolean;
+    id?: string;
 }
 
 type RelayRequest =
@@ -44,22 +46,16 @@ type RelayRequest =
     | {
         action: "submitReportWithOidc";
         payload: {
-            idToken: string;
-            jwksUri: string;
             orgId: string;
             category: number;
             encryptedCIDHex: `0x${string}`;
+            nullifierHash: string;
+            unblindedSignature: string;
         };
     };
 
 /**
  * Send a relay request to the given endpoint.
- *
- * - Public reporter actions (submitReport / submitReportForOrg) use "/api/relay"
- *   directly — no API key required.
- * - Privileged admin actions use "/api/admin-relay", a server-side proxy that
- *   reads RELAY_API_KEY from the server environment and injects it before
- *   forwarding to "/api/relay". This keeps the secret off the browser.
  */
 async function relayTx(body: RelayRequest, endpoint = "/api/relay"): Promise<RelayResponse> {
     const headers: Record<string, string> = {
@@ -77,10 +73,12 @@ async function relayTx(body: RelayRequest, endpoint = "/api/relay"): Promise<Rel
         settled?: boolean;
         receiptStatus?: "success" | "reverted";
         blockNumber?: string;
+        queued?: boolean;
+        id?: string;
         error?: string;
     };
 
-    if (!res.ok || !data.txHash) {
+    if (!res.ok || (!data.txHash && !data.queued)) {
         throw new Error(data.error || `Relayer failed (${res.status})`);
     }
 
@@ -89,6 +87,8 @@ async function relayTx(body: RelayRequest, endpoint = "/api/relay"): Promise<Rel
         settled: data.settled,
         receiptStatus: data.receiptStatus,
         blockNumber: data.blockNumber,
+        queued: data.queued,
+        id: data.id,
     };
 }
 

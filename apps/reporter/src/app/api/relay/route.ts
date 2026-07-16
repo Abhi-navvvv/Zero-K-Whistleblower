@@ -4,9 +4,20 @@ import { privateKeyToAccount } from "viem/accounts";
 import { hardhat, sepolia } from "viem/chains";
 import { REGISTRY_ABI, REGISTRY_ADDRESS } from "@zk-whistleblower/shared/src/contracts";
 import { timingSafeEqual } from "crypto";
-import * as jose from "jose";
+import path from "path";
+import fs from "fs";
+import { b64urlToBigInt, modPow } from "@zk-whistleblower/shared/src/blindSign";
 
 export const runtime = "nodejs";
+
+const STORAGE_DIR = path.join(process.cwd(), "data");
+
+function getStoragePath(filename: string): string {
+  if (!fs.existsSync(STORAGE_DIR)) {
+    fs.mkdirSync(STORAGE_DIR, { recursive: true });
+  }
+  return path.join(STORAGE_DIR, filename);
+}
 
 /**
  * Helper to safely compare strings in constant time to prevent timing attacks
@@ -106,152 +117,193 @@ function getErrorMessage(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
 }
 
-function isOptionalReadUnavailable(error: unknown, functionName: string): boolean {
-    const message = getErrorMessage(error);
-    return (
-        message.includes(`function "${functionName}" reverted`) ||
-        message.includes('returned no data ("0x")') ||
-        message.includes("does not have the function")
-    );
-}
+// ─── Transaction Queue Worker ──────────────────────────────────────────────────
 
-function stringifyDiagnosticValue(value: unknown): string {
-    return JSON.stringify(value, (_key, nestedValue) =>
-        typeof nestedValue === "bigint" ? nestedValue.toString() : nestedValue
-    );
-}
+const globalObj = globalThis as any;
 
-/** Deep-converts any BigInt values in a diagnostics object to strings so it
- *  can be safely passed to NextResponse.json() without a serialization error. */
-function sanitizeDiagnostics<T>(value: T): T {
-    return JSON.parse(JSON.stringify(value, (_key, nestedValue) =>
-        typeof nestedValue === "bigint" ? nestedValue.toString() : nestedValue
-    )) as T;
-}
+async function processQueue() {
+  if (globalObj.isQueueProcessing) return;
+  globalObj.isQueueProcessing = true;
 
-type RegistryProbe = {
-    ok: boolean;
-    value?: unknown;
-    error?: string;
-};
+  try {
+    const queuePath = getStoragePath("tx-queue.json");
+    if (!fs.existsSync(queuePath)) return;
 
-type OidcRegistryDiagnostics = {
-    ok: boolean;
-    issues: string[];
-    probes: Record<string, RegistryProbe>;
-};
-
-async function settleProbe(name: string, promise: Promise<unknown>): Promise<[string, RegistryProbe]> {
+    let queue: Record<string, any> = {};
     try {
-        return [name, { ok: true, value: await promise }];
-    } catch (error: unknown) {
-        return [name, { ok: false, error: getErrorMessage(error) }];
-    }
-}
-
-async function diagnoseOidcRegistry(
-    publicClient: ReturnType<typeof createPublicClient>,
-    orgId: bigint,
-    nullifierHash: bigint,
-    relayerAddress: Address
-): Promise<OidcRegistryDiagnostics> {
-    // Step 1: read OIDC_AUTHORITY_ROLE bytes32 directly from the contract so we
-    // use the exact same role hash the contract stored, with no local re-encoding risk.
-    let oidcAuthorityRoleBytes32: `0x${string}`;
-    try {
-        oidcAuthorityRoleBytes32 = await publicClient.readContract({
-            address: REGISTRY_ADDRESS,
-            abi: REGISTRY_ABI,
-            functionName: "OIDC_AUTHORITY_ROLE",
-        }) as `0x${string}`;
+      queue = JSON.parse(fs.readFileSync(queuePath, "utf-8"));
     } catch {
-        // Fallback: compute locally (matches Solidity keccak256("OIDC_AUTHORITY_ROLE"))
-        oidcAuthorityRoleBytes32 = keccak256(toBytes("OIDC_AUTHORITY_ROLE"));
+      return;
     }
 
-    const probeEntries = await Promise.all([
-        settleProbe("contractCode", publicClient.getCode({ address: REGISTRY_ADDRESS })),
-        settleProbe("paused", publicClient.readContract({
-            address: REGISTRY_ADDRESS,
-            abi: REGISTRY_ABI,
-            functionName: "paused",
-        })),
-        settleProbe("organizationExists", publicClient.readContract({
-            address: REGISTRY_ADDRESS,
-            abi: REGISTRY_ABI,
-            functionName: "organizationExists",
-            args: [orgId],
-        })),
-        settleProbe("getOrganization", publicClient.readContract({
-            address: REGISTRY_ADDRESS,
-            abi: REGISTRY_ABI,
-            functionName: "getOrganization",
-            args: [orgId],
-        })),
-        settleProbe("orgUsedNullifiers", publicClient.readContract({
-            address: REGISTRY_ADDRESS,
-            abi: REGISTRY_ABI,
-            functionName: "orgUsedNullifiers",
-            args: [orgId, nullifierHash],
-        })),
-        settleProbe("OIDC_AUTHORITY_ROLE", Promise.resolve(oidcAuthorityRoleBytes32)),
-        settleProbe("hasRole(OIDC_AUTHORITY_ROLE, relayer)", publicClient.readContract({
-            address: REGISTRY_ADDRESS,
-            abi: REGISTRY_ABI,
-            functionName: "hasRole",
-            args: [oidcAuthorityRoleBytes32, relayerAddress],
-        })),
-    ]);
+    const queuedIds = Object.keys(queue).filter(id => queue[id].status === "QUEUED");
+    if (queuedIds.length === 0) return;
 
-    const probes = Object.fromEntries(probeEntries) as Record<string, RegistryProbe>;
-    const issues: string[] = [];
+    // Shuffle queued IDs to prevent network timing linkability / correlation
+    const shuffledIds = queuedIds.sort(() => Math.random() - 0.5);
 
-    const contractCode = probes.contractCode;
-    if (!contractCode.ok || !contractCode.value || contractCode.value === "0x") {
-        issues.push(`No contract code found at ${REGISTRY_ADDRESS}`);
+    const { rpcUrl, privateKey } = readConfig();
+    const account = privateKeyToAccount(privateKey);
+    const chain = readChain();
+    const walletClient = createWalletClient({ account, chain, transport: http(rpcUrl) });
+    const publicClient = createPublicClient({ chain, transport: http(rpcUrl) });
+
+    for (const id of shuffledIds) {
+      const item = queue[id];
+      item.status = "BROADCASTING";
+      fs.writeFileSync(queuePath, JSON.stringify(queue, null, 2), "utf-8");
+
+      try {
+        let txHash: `0x${string}`;
+
+        if (item.action === "submitReportWithOidc") {
+          const { orgId, nullifierHash, encryptedCIDHex, category } = item.payload;
+          const orgIdBigInt = asBigInt(String(orgId), "orgId");
+          const categoryNumber = Number(category);
+          const nullifierHashBigInt = BigInt(nullifierHash);
+
+          // Generate authority signature
+          const messageHash = keccak256(
+              encodePacked(
+                  ["uint256", "uint256", "bytes", "uint8"],
+                  [orgIdBigInt, nullifierHashBigInt, encryptedCIDHex as `0x${string}`, categoryNumber]
+              )
+          );
+          const signature = await account.signMessage({
+              message: { raw: toBytes(messageHash) }
+          });
+          const submitArgs = [
+              orgIdBigInt,
+              nullifierHashBigInt,
+              encryptedCIDHex as `0x${string}`,
+              categoryNumber,
+              signature
+          ] as const;
+
+          await ensureOrganizationApisAvailable(publicClient);
+
+          txHash = await walletClient.writeContract({
+              address: REGISTRY_ADDRESS,
+              abi: REGISTRY_ABI,
+              functionName: "submitReportWithOidc",
+              args: submitArgs,
+              account,
+          });
+        } else {
+          // ZK submissions: submitReport or submitReportForOrg
+          const pA = item.payload.pA as [string, string];
+          const pB = item.payload.pB as [[string, string], [string, string]];
+          const pC = item.payload.pC as [string, string];
+          const category = Number(item.payload.category);
+          const encryptedCIDHex = item.payload.encryptedCIDHex;
+
+          const commonArgs = [
+              [asBigInt(pA[0], "pA[0]"), asBigInt(pA[1], "pA[1]")],
+              [
+                  [asBigInt(pB[0][0], "pB[0][0]"), asBigInt(pB[0][1], "pB[0][1]")],
+                  [asBigInt(pB[1][0], "pB[1][0]"), asBigInt(pB[1][1], "pB[1][1]")],
+              ],
+              [asBigInt(pC[0], "pC[0]"), asBigInt(pC[1], "pC[1]")],
+              asBigInt(item.payload.root, "root"),
+              asBigInt(item.payload.nullifierHash, "nullifierHash"),
+              asBigInt(item.payload.externalNullifier, "externalNullifier"),
+              encryptedCIDHex as `0x${string}`,
+              category,
+          ] as const;
+
+          if (item.action === "submitReportForOrg") {
+              await ensureOrganizationApisAvailable(publicClient);
+              txHash = await walletClient.writeContract({
+                  address: REGISTRY_ADDRESS,
+                  abi: REGISTRY_ABI,
+                  functionName: "submitReportForOrg",
+                  args: [asBigInt(item.payload.orgId, "orgId"), ...commonArgs],
+                  account,
+              });
+          } else {
+              txHash = await walletClient.writeContract({
+                  address: REGISTRY_ADDRESS,
+                  abi: REGISTRY_ABI,
+                  functionName: "submitReport",
+                  args: commonArgs,
+                  account,
+              });
+          }
+        }
+
+        // Wait for confirmation
+        const receipt = await publicClient.waitForTransactionReceipt({
+            hash: txHash,
+            timeout: 120_000,
+        });
+
+        if (receipt.status !== "success") {
+            item.status = "FAILED";
+            item.error = "Transaction reverted on chain";
+            item.txHash = txHash;
+        } else {
+            item.status = "SUCCESS";
+            item.txHash = txHash;
+            item.blockNumber = receipt.blockNumber.toString();
+        }
+      } catch (err: unknown) {
+        item.status = "FAILED";
+        item.error = getErrorMessage(err);
+      }
+
+      item.processedAt = new Date().toISOString();
+      fs.writeFileSync(queuePath, JSON.stringify(queue, null, 2), "utf-8");
+    }
+  } catch (err) {
+    console.error("Queue worker error during processing:", err);
+  } finally {
+    globalObj.isQueueProcessing = false;
+  }
+}
+
+// Start queue worker check interval once globally
+if (!globalObj.isQueueWorkerRunning) {
+  globalObj.isQueueWorkerRunning = true;
+  setInterval(async () => {
+    try {
+      await processQueue();
+    } catch (err) {
+      console.error("Queue worker failed to execute:", err);
+    }
+  }, 10000); // Poll queue every 10 seconds
+}
+
+// ─── API Routes ──────────────────────────────────────────────────────────────
+
+export async function GET(req: NextRequest) {
+  try {
+    const { searchParams } = new URL(req.url);
+    const queueId = searchParams.get("id");
+    if (!queueId) {
+      return NextResponse.json({ error: "Missing queue transaction ID" }, { status: 400 });
     }
 
-    const paused = probes.paused;
-    if (paused.ok && paused.value === true) {
-        issues.push("ContractPaused");
-    } else if (!paused.ok && !isOptionalReadUnavailable(paused.error ?? "", "paused")) {
-        issues.push(`paused() failed: ${paused.error}`);
+    const queuePath = getStoragePath("tx-queue.json");
+    if (!fs.existsSync(queuePath)) {
+      return NextResponse.json({ error: "Transaction not found" }, { status: 404 });
     }
 
-    const organizationExists = probes.organizationExists;
-    if (!organizationExists.ok) {
-        issues.push(`organizationExists(${orgId.toString()}) failed: ${organizationExists.error}`);
-    } else if (organizationExists.value !== true) {
-        issues.push(`OrganizationDoesNotExist: org ${orgId.toString()} is not registered`);
+    const queue = JSON.parse(fs.readFileSync(queuePath, "utf-8")) as Record<string, any>;
+    const item = queue[queueId];
+    if (!item) {
+      return NextResponse.json({ error: "Transaction not found" }, { status: 404 });
     }
 
-    const organization = probes.getOrganization;
-    if (!organization.ok) {
-        issues.push(`getOrganization(${orgId.toString()}) failed: ${organization.error}`);
-    } else if ((organization.value as { active?: boolean }).active === false) {
-        issues.push(`OrganizationInactive: org ${orgId.toString()} is disabled`);
-    }
-
-    const nullifierUsed = probes.orgUsedNullifiers;
-    if (!nullifierUsed.ok) {
-        issues.push(`orgUsedNullifiers(${orgId.toString()}, ${nullifierHash.toString()}) failed: ${nullifierUsed.error}`);
-    } else if (nullifierUsed.value === true) {
-        issues.push("NullifierAlreadyUsed");
-    }
-
-    const relayerHasRole = probes["hasRole(OIDC_AUTHORITY_ROLE, relayer)"];
-    if (!relayerHasRole.ok) {
-        issues.push(`hasRole(OIDC_AUTHORITY_ROLE, relayer) failed: ${relayerHasRole.error}`);
-    } else if (relayerHasRole.value !== true) {
-        issues.push(`UnauthorizedOidcAuthority: relayer ${relayerAddress} must be granted OIDC_AUTHORITY_ROLE`);
-    }
-
-    const oidcAuthorityRole = probes.OIDC_AUTHORITY_ROLE;
-    if (!oidcAuthorityRole.ok && !isOptionalReadUnavailable(oidcAuthorityRole.error ?? "", "OIDC_AUTHORITY_ROLE")) {
-        issues.push(`OIDC_AUTHORITY_ROLE() failed: ${oidcAuthorityRole.error}`);
-    }
-
-    return { ok: issues.length === 0, issues, probes };
+    return NextResponse.json({
+      status: item.status,
+      txHash: item.txHash,
+      error: item.error,
+      blockNumber: item.blockNumber,
+      settled: item.status === "SUCCESS" || item.status === "FAILED",
+    });
+  } catch (err: unknown) {
+    return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 500 });
+  }
 }
 
 export async function POST(req: NextRequest) {
@@ -266,9 +318,6 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ error: "Invalid relayer payload" }, { status: 400 });
         }
 
-        // --- Tiered authorization ---
-        // Report submission is allowed without API key (anonymous reporter flow).
-        // All privileged admin actions require RELAY_API_KEY and fail-closed.
         const isPublicAction = body.action === "submitReport" || body.action === "submitReportForOrg" || body.action === "submitReportWithOidc";
         if (!isPublicAction) {
             const expectedKey = process.env.RELAY_API_KEY;
@@ -294,6 +343,55 @@ export async function POST(req: NextRequest) {
 
         let txHash: `0x${string}`;
 
+        if (isPublicAction) {
+            // Option C: verify OIDC blind signature first
+            if (body.action === "submitReportWithOidc") {
+                const { nullifierHash, unblindedSignature } = body.payload;
+                if (!nullifierHash || !unblindedSignature) {
+                    return NextResponse.json({ error: "Missing nullifierHash or unblindedSignature" }, { status: 400 });
+                }
+
+                const keyPath = getStoragePath("blind-sign-key.json");
+                if (!fs.existsSync(keyPath)) {
+                    return NextResponse.json({ error: "OIDC blind signing key is not initialized on the relayer" }, { status: 500 });
+                }
+
+                const keys = JSON.parse(fs.readFileSync(keyPath, "utf-8"));
+                const N = b64urlToBigInt(keys.publicKey.n);
+                const e = b64urlToBigInt(keys.publicKey.e);
+
+                const msgVal = BigInt(nullifierHash);
+                const sigVal = BigInt("0x" + unblindedSignature);
+
+                const isValid = modPow(sigVal, e, N) === msgVal;
+                if (!isValid) {
+                    return NextResponse.json({ error: "Invalid OIDC blind signature — transaction rejected" }, { status: 401 });
+                }
+            }
+
+            // Push to local queue file for delayed batch broadcasting
+            const queueId = crypto.randomUUID();
+            const queuePath = getStoragePath("tx-queue.json");
+            const queue = fs.existsSync(queuePath) ? JSON.parse(fs.readFileSync(queuePath, "utf-8")) : {};
+
+            queue[queueId] = {
+                id: queueId,
+                action: body.action,
+                payload: body.payload,
+                status: "QUEUED",
+                createdAt: new Date().toISOString(),
+            };
+
+            fs.writeFileSync(queuePath, JSON.stringify(queue, null, 2), "utf-8");
+
+            return NextResponse.json({
+                queued: true,
+                id: queueId,
+                message: "Report received and queued for broadcast. For security, it will be published within ~60 seconds."
+            });
+        }
+
+        // Administrative actions run synchronously
         if (body.action === "addRoot") {
             txHash = await walletClient.writeContract({
                 address: REGISTRY_ADDRESS,
@@ -399,178 +497,8 @@ export async function POST(req: NextRequest) {
                 ],
                 account,
             });
-        } else if (body.action === "submitReportWithOidc") {
-            await ensureOrganizationApisAvailable(publicClient);
-            const idToken = body.payload.idToken;
-            const jwksUri = body.payload.jwksUri;
-            const orgId = body.payload.orgId;
-            const category = body.payload.category;
-            const encryptedCIDHex = body.payload.encryptedCIDHex;
-
-            if (typeof idToken !== "string" || !idToken.trim()) {
-                return NextResponse.json({ error: "Missing or invalid idToken" }, { status: 400 });
-            }
-            if (typeof jwksUri !== "string" || !jwksUri.trim()) {
-                return NextResponse.json({ error: "Missing or invalid jwksUri" }, { status: 400 });
-            }
-            if (orgId === undefined || orgId === null) {
-                return NextResponse.json({ error: "Missing orgId" }, { status: 400 });
-            }
-            if (typeof category !== "number" || category < 0 || category > 3) {
-                return NextResponse.json({ error: "Invalid category" }, { status: 400 });
-            }
-            if (typeof encryptedCIDHex !== "string" || !/^0x[0-9a-fA-F]*$/.test(encryptedCIDHex)) {
-                return NextResponse.json({ error: "Invalid encryptedCIDHex" }, { status: 400 });
-            }
-
-            const orgIdBigInt = asBigInt(orgId, "orgId");
-            const categoryNumber = Number(category);
-
-            // 1. Resolve absolute JWKS URI
-            let absoluteJwksUri = jwksUri;
-            if (jwksUri.startsWith("/")) {
-                const origin = req.nextUrl.origin || `http://${req.headers.get("host") || "localhost:3001"}`;
-                absoluteJwksUri = `${origin}${jwksUri}`;
-            }
-
-            // 2. Cryptographically verify OIDC ID token
-            let email: string;
-            try {
-                const JWKS = jose.createRemoteJWKSet(new URL(absoluteJwksUri));
-                const { payload } = await jose.jwtVerify(idToken, JWKS);
-                email = (payload.email as string) || "";
-            } catch (err: unknown) {
-                return NextResponse.json({ error: `OIDC verification failed: ${err instanceof Error ? err.message : String(err)}` }, { status: 401 });
-            }
-
-            const domain = email.split("@")[1] || "";
-            if (!email || !domain) {
-                return NextResponse.json({ error: "OIDC token missing email claim" }, { status: 400 });
-            }
-
-            // 3. Verify domain constraint
-            const allowedDomain = process.env.NEXT_PUBLIC_ALLOWED_OIDC_DOMAIN || "bennett.edu.in";
-            if (allowedDomain && domain !== allowedDomain) {
-                return NextResponse.json({ error: `Domain mismatch: Only @${allowedDomain} accounts are authorized` }, { status: 403 });
-            }
-
-            // 4. Derive private nullifier hash
-            const relayerSalt = process.env.RELAYER_SALT || "default-relayer-salt-change-me";
-            const inputStr = `${email}:${relayerSalt}`;
-            const nullifierHash = hexToBigInt(keccak256(toHex(inputStr)));
-
-            // 5. Check every OIDC registry dependency in one pass so setup errors are reported together.
-            const diagnostics = await diagnoseOidcRegistry(publicClient, orgIdBigInt, nullifierHash, account.address);
-            if (!diagnostics.ok) {
-                return NextResponse.json(
-                    { error: `Registry compatibility check failed: ${diagnostics.issues.join("; ")}`, diagnostics: sanitizeDiagnostics(diagnostics) },
-                    { status: 500 }
-                );
-            }
-
-            // 6. Generate Relayer/Authority Signature
-            const messageHash = keccak256(
-                encodePacked(
-                    ["uint256", "uint256", "bytes", "uint8"],
-                    [orgIdBigInt, nullifierHash, encryptedCIDHex as `0x${string}`, categoryNumber]
-                )
-            );
-            const signature = await account.signMessage({
-                message: { raw: toBytes(messageHash) }
-            });
-            const submitArgs = [
-                orgIdBigInt,
-                nullifierHash,
-                encryptedCIDHex as `0x${string}`,
-                categoryNumber,
-                signature
-            ] as const;
-
-            try {
-                await publicClient.simulateContract({
-                    address: REGISTRY_ADDRESS,
-                    abi: REGISTRY_ABI,
-                    functionName: "submitReportWithOidc",
-                    args: submitArgs,
-                    account,
-                });
-            } catch (error: unknown) {
-                return NextResponse.json(
-                    {
-                        error: [
-                            "submitReportWithOidc simulation failed after registry checks passed",
-                            getErrorMessage(error),
-                            `diagnostics=${stringifyDiagnosticValue(diagnostics.probes)}`,
-                        ].filter(Boolean).join(": "),
-                        diagnostics: sanitizeDiagnostics(diagnostics),
-                    },
-                    { status: 500 }
-                );
-            }
-
-            // 7. Submit transaction on-chain
-            txHash = await walletClient.writeContract({
-                address: REGISTRY_ADDRESS,
-                abi: REGISTRY_ABI,
-                functionName: "submitReportWithOidc",
-                args: submitArgs,
-                account,
-            });
         } else {
-            const pA = body.payload.pA as [string, string];
-            const pB = body.payload.pB as [[string, string], [string, string]];
-            const pC = body.payload.pC as [string, string];
-            const category = body.payload.category;
-            const encryptedCIDHex = body.payload.encryptedCIDHex;
-
-            if (!Array.isArray(pA) || pA.length !== 2) {
-                return NextResponse.json({ error: "Invalid pA" }, { status: 400 });
-            }
-            if (!Array.isArray(pB) || pB.length !== 2 || !Array.isArray(pB[0]) || !Array.isArray(pB[1])) {
-                return NextResponse.json({ error: "Invalid pB" }, { status: 400 });
-            }
-            if (!Array.isArray(pC) || pC.length !== 2) {
-                return NextResponse.json({ error: "Invalid pC" }, { status: 400 });
-            }
-            if (typeof category !== "number" || category < 0 || category > 3) {
-                return NextResponse.json({ error: "Invalid category" }, { status: 400 });
-            }
-            if (typeof encryptedCIDHex !== "string" || !/^0x[0-9a-fA-F]*$/.test(encryptedCIDHex)) {
-                return NextResponse.json({ error: "Invalid encryptedCIDHex" }, { status: 400 });
-            }
-
-            const commonArgs = [
-                [asBigInt(pA[0], "pA[0]"), asBigInt(pA[1], "pA[1]")],
-                [
-                    [asBigInt(pB[0][0], "pB[0][0]"), asBigInt(pB[0][1], "pB[0][1]")],
-                    [asBigInt(pB[1][0], "pB[1][0]"), asBigInt(pB[1][1], "pB[1][1]")],
-                ],
-                [asBigInt(pC[0], "pC[0]"), asBigInt(pC[1], "pC[1]")],
-                asBigInt(body.payload.root, "root"),
-                asBigInt(body.payload.nullifierHash, "nullifierHash"),
-                asBigInt(body.payload.externalNullifier, "externalNullifier"),
-                encryptedCIDHex as `0x${string}`,
-                category,
-            ] as const;
-
-            if (body.action === "submitReportForOrg") {
-                await ensureOrganizationApisAvailable(publicClient);
-                txHash = await walletClient.writeContract({
-                    address: REGISTRY_ADDRESS,
-                    abi: REGISTRY_ABI,
-                    functionName: "submitReportForOrg",
-                    args: [asBigInt(body.payload.orgId, "orgId"), ...commonArgs],
-                    account,
-                });
-            } else {
-                txHash = await walletClient.writeContract({
-                    address: REGISTRY_ADDRESS,
-                    abi: REGISTRY_ABI,
-                    functionName: "submitReport",
-                    args: commonArgs,
-                    account,
-                });
-            }
+            return NextResponse.json({ error: "Unsupported administrative action" }, { status: 400 });
         }
 
         const receipt = await publicClient.waitForTransactionReceipt({
