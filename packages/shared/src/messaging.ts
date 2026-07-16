@@ -28,9 +28,10 @@ export interface EncryptedMessage {
  * The derivation is deterministic: same secret → same commKey.
  * The admin gets this key from the decrypted report manifest.
  */
-export async function deriveCommKey(secret: bigint): Promise<string> {
+export async function deriveCommKey(secret: bigint, nullifierHash?: bigint): Promise<string> {
   const encoder = new TextEncoder();
-  const material = encoder.encode("zk-comm:" + secret.toString());
+  const nullifierPart = nullifierHash !== undefined ? ":" + nullifierHash.toString() : "";
+  const material = encoder.encode("zk-comm:" + secret.toString() + nullifierPart);
   const hashBuf = await crypto.subtle.digest("SHA-256", material);
   // Return as hex string for easy serialization
   const bytes = new Uint8Array(hashBuf);
